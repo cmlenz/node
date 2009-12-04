@@ -1263,7 +1263,7 @@ size_t parse (http_parser *parser, const char *data, size_t len, int start_state
           /* chunked encoding - ignore Content-Length header */
           state = s_chunk_size_start;
         } else {
-          if (parser->content_length == 0 || parser->method == HTTP_HEAD) {
+          if (parser->content_length == 0) {
             /* Content-Length header given but zero: Content-Length: 0\r\n */
             CALLBACK2(message_complete);
             state = NEW_MESSAGE();

@@ -426,28 +426,6 @@ const struct message requests[] =
   ,.body= ""
   }
 
-#define HEAD_REQUEST 14
-, {.name = "head"
-  ,.type= REQUEST
-  ,.raw= "HEAD /test HTTP/1.0\r\n"
-         "Host: 0.0.0.0:5000\r\n"
-         "Content-Length: 42\r\n\r\n"
-  ,.should_keep_alive= FALSE
-  ,.message_complete_on_eof= FALSE
-  ,.http_major= 1
-  ,.http_minor= 0
-  ,.method= HTTP_HEAD
-  ,.query_string= ""
-  ,.fragment= ""
-  ,.request_path= "/test"
-  ,.request_url= "/test"
-  ,.num_headers= 2
-  ,.headers= { { "Host", "0.0.0.0:5000" }
-             , { "Content-Length", "42" }
-             }
-  ,.body= ""
-  }
-	
 , {.name= NULL } /* sentinel */
 };
 
