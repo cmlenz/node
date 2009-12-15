@@ -183,7 +183,7 @@ process.EventEmitter.prototype.listeners = function (type) {
 process.inherits = function (ctor, superCtor) {
   var tempCtor = function(){};
   tempCtor.prototype = superCtor.prototype;
-  ctor.super_ = superCtor.prototype;
+  ctor.super_ = superCtor;
   ctor.prototype = new tempCtor();
   ctor.prototype.constructor = ctor;
 };
@@ -536,21 +536,25 @@ var posixModule = createInternalModule("posix", function (exports) {
 
   exports.read = function (fd, length, position, encoding) {
     var promise = new process.Promise()
+    encoding = encoding || "binary";
     process.fs.read(fd, length, position, encoding, callback(promise));
     return promise;
   };
 
   exports.readSync = function (fd, length, position, encoding) {
+    encoding = encoding || "binary";
     return process.fs.read(fd, length, position, encoding);
   };
 
   exports.write = function (fd, data, position, encoding) {
     var promise = new process.Promise()
+    encoding = encoding || "binary";
     process.fs.write(fd, data, position, encoding, callback(promise));
     return promise;
   };
 
   exports.writeSync = function (fd, data, position, encoding) {
+    encoding = encoding || "binary";
     return process.fs.write(fd, data, position, encoding);
   };
 
@@ -925,7 +929,7 @@ process.exit = function (code) {
 var cwd = process.cwd();
 
 // Make process.ARGV[0] and process.ARGV[1] into full paths.
-if (process.ARGV[0].charAt(0) != "/") {
+if (process.ARGV[0].indexOf('/') > 0) {
   process.ARGV[0] = path.join(cwd, process.ARGV[0]);
 }
 
