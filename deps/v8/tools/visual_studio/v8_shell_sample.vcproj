@@ -37,6 +37,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
+        AdditionalIncludeDirectories="$(ProjectDir)\..\..\include"
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -68,9 +69,6 @@
 			/>
 			<Tool
 				Name="VCAppVerifierTool"
-			/>
-			<Tool
-				Name="VCWebDeploymentTool"
 			/>
 			<Tool
 				Name="VCPostBuildEventTool"
@@ -98,6 +96,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
+        AdditionalIncludeDirectories="$(ProjectDir)\..\..\include"
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -129,9 +128,6 @@
 			/>
 			<Tool
 				Name="VCAppVerifierTool"
-			/>
-			<Tool
-				Name="VCWebDeploymentTool"
 			/>
 			<Tool
 				Name="VCPostBuildEventTool"

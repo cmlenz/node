@@ -80,10 +80,7 @@ function EQUALS(y) {
     } else {
       // x is not a number, boolean, null or undefined.
       if (y == null) return 1;  // not equal
-      if (IS_OBJECT(y)) {
-        return %_ObjectEquals(x, y) ? 0 : 1;
-      }
-      if (IS_FUNCTION(y)) {
+      if (IS_SPEC_OBJECT(y)) {
         return %_ObjectEquals(x, y) ? 0 : 1;
       }
 
@@ -114,24 +111,37 @@ function STRICT_EQUALS(x) {
 // ECMA-262, section 11.8.5, page 53. The 'ncr' parameter is used as
 // the result when either (or both) the operands are NaN.
 function COMPARE(x, ncr) {
-  // Fast case for numbers and strings.
-  if (IS_NUMBER(this) && IS_NUMBER(x)) {
-    return %NumberCompare(this, x, ncr);
-  }
-  if (IS_STRING(this) && IS_STRING(x)) {
-    return %StringCompare(this, x);
+  var left;
+  var right;
+  // Fast cases for string, numbers and undefined compares.
+  if (IS_STRING(this)) {
+    if (IS_STRING(x)) return %_StringCompare(this, x);
+    if (IS_UNDEFINED(x)) return ncr;
+    left = this;
+  } else if (IS_NUMBER(this)) {
+    if (IS_NUMBER(x)) return %NumberCompare(this, x, ncr);
+    if (IS_UNDEFINED(x)) return ncr;
+    left = this;
+  } else if (IS_UNDEFINED(this)) {
+    if (!IS_UNDEFINED(x)) {
+      %ToPrimitive(x, NUMBER_HINT);
+    }
+    return ncr;
+  } else if (IS_UNDEFINED(x)) {
+    %ToPrimitive(this, NUMBER_HINT);
+    return ncr;
+  } else {
+    left = %ToPrimitive(this, NUMBER_HINT);
   }
 
-  // Default implementation.
-  var a = %ToPrimitive(this, NUMBER_HINT);
-  var b = %ToPrimitive(x, NUMBER_HINT);
-  if (IS_STRING(a) && IS_STRING(b)) {
-    return %StringCompare(a, b);
+  right = %ToPrimitive(x, NUMBER_HINT);
+  if (IS_STRING(left) && IS_STRING(right)) {
+    return %_StringCompare(left, right);
   } else {
-    var a_number = %ToNumber(a);
-    var b_number = %ToNumber(b);
-    if (NUMBER_IS_NAN(a_number) || NUMBER_IS_NAN(b_number)) return ncr;
-    return %NumberCompare(a_number, b_number, ncr);
+    var left_number = %ToNumber(left);
+    var right_number = %ToNumber(right);
+    if (NUMBER_IS_NAN(left_number) || NUMBER_IS_NAN(right_number)) return ncr;
+    return %NumberCompare(left_number, right_number, ncr);
   }
 }
 
@@ -155,7 +165,7 @@ function ADD(x) {
   if (IS_STRING(a)) {
     return %_StringAdd(a, %ToString(b));
   } else if (IS_STRING(b)) {
-    return %_StringAdd(%ToString(a), b);
+    return %_StringAdd(%NonStringToString(a), b);
   } else {
     return %NumberAdd(%ToNumber(a), %ToNumber(b));
   }
@@ -165,11 +175,11 @@ function ADD(x) {
 // Left operand (this) is already a string.
 function STRING_ADD_LEFT(y) {
   if (!IS_STRING(y)) {
-    if (IS_STRING_WRAPPER(y)) {
+    if (IS_STRING_WRAPPER(y) && %_IsStringWrapperSafeForDefaultValueOf(y)) {
       y = %_ValueOf(y);
     } else {
       y = IS_NUMBER(y)
-          ? %NumberToString(y)
+          ? %_NumberToString(y)
           : %ToString(%ToPrimitive(y, NO_HINT));
     }
   }
@@ -181,11 +191,11 @@ function STRING_ADD_LEFT(y) {
 function STRING_ADD_RIGHT(y) {
   var x = this;
   if (!IS_STRING(x)) {
-    if (IS_STRING_WRAPPER(x)) {
+    if (IS_STRING_WRAPPER(x) && %_IsStringWrapperSafeForDefaultValueOf(x)) {
       x = %_ValueOf(x);
     } else {
       x = IS_NUMBER(x)
-          ? %NumberToString(x)
+          ? %_NumberToString(x)
           : %ToString(%ToPrimitive(x, NO_HINT));
     }
   }
@@ -195,32 +205,32 @@ function STRING_ADD_RIGHT(y) {
 
 // ECMA-262, section 11.6.2, page 50.
 function SUB(y) {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
-  if (!IS_NUMBER(y)) y = %ToNumber(y);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
+  if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   return %NumberSub(x, y);
 }
 
 
 // ECMA-262, section 11.5.1, page 48.
 function MUL(y) {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
-  if (!IS_NUMBER(y)) y = %ToNumber(y);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
+  if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   return %NumberMul(x, y);
 }
 
 
 // ECMA-262, section 11.5.2, page 49.
 function DIV(y) {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
-  if (!IS_NUMBER(y)) y = %ToNumber(y);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
+  if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   return %NumberDiv(x, y);
 }
 
 
 // ECMA-262, section 11.5.3, page 49.
 function MOD(y) {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
-  if (!IS_NUMBER(y)) y = %ToNumber(y);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
+  if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   return %NumberMod(x, y);
 }
 
@@ -233,8 +243,8 @@ function MOD(y) {
 
 // ECMA-262, section 11.10, page 57.
 function BIT_OR(y) {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
-  if (!IS_NUMBER(y)) y = %ToNumber(y);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
+  if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   return %NumberOr(x, y);
 }
 
@@ -244,14 +254,14 @@ function BIT_AND(y) {
   var x;
   if (IS_NUMBER(this)) {
     x = this;
-    if (!IS_NUMBER(y)) y = %ToNumber(y);
+    if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   } else {
-    x = %ToNumber(this);
+    x = %NonNumberToNumber(this);
     // Make sure to convert the right operand to a number before
     // bailing out in the fast case, but after converting the
     // left operand. This ensures that valueOf methods on the right
     // operand are always executed.
-    if (!IS_NUMBER(y)) y = %ToNumber(y);
+    if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
     // Optimize for the case where we end up AND'ing a value
     // that doesn't convert to a number. This is common in
     // certain benchmarks.
@@ -263,30 +273,30 @@ function BIT_AND(y) {
 
 // ECMA-262, section 11.10, page 57.
 function BIT_XOR(y) {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
-  if (!IS_NUMBER(y)) y = %ToNumber(y);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
+  if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   return %NumberXor(x, y);
 }
 
 
 // ECMA-262, section 11.4.7, page 47.
 function UNARY_MINUS() {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
   return %NumberUnaryMinus(x);
 }
 
 
 // ECMA-262, section 11.4.8, page 48.
 function BIT_NOT() {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
   return %NumberNot(x);
 }
 
 
 // ECMA-262, section 11.7.1, page 51.
 function SHL(y) {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
-  if (!IS_NUMBER(y)) y = %ToNumber(y);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
+  if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   return %NumberShl(x, y);
 }
 
@@ -296,14 +306,14 @@ function SAR(y) {
   var x;
   if (IS_NUMBER(this)) {
     x = this;
-    if (!IS_NUMBER(y)) y = %ToNumber(y);
+    if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   } else {
-    x = %ToNumber(this);
+    x = %NonNumberToNumber(this);
     // Make sure to convert the right operand to a number before
     // bailing out in the fast case, but after converting the
     // left operand. This ensures that valueOf methods on the right
     // operand are always executed.
-    if (!IS_NUMBER(y)) y = %ToNumber(y);
+    if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
     // Optimize for the case where we end up shifting a value
     // that doesn't convert to a number. This is common in
     // certain benchmarks.
@@ -315,8 +325,8 @@ function SAR(y) {
 
 // ECMA-262, section 11.7.3, page 52.
 function SHR(y) {
-  var x = IS_NUMBER(this) ? this : %ToNumber(this);
-  if (!IS_NUMBER(y)) y = %ToNumber(y);
+  var x = IS_NUMBER(this) ? this : %NonNumberToNumber(this);
+  if (!IS_NUMBER(y)) y = %NonNumberToNumber(y);
   return %NumberShr(x, y);
 }
 
@@ -328,14 +338,14 @@ function SHR(y) {
 */
 
 // ECMA-262, section 11.4.1, page 46.
-function DELETE(key) {
-  return %DeleteProperty(%ToObject(this), %ToString(key));
+function DELETE(key, strict) {
+  return %DeleteProperty(%ToObject(this), %ToString(key), strict);
 }
 
 
 // ECMA-262, section 11.8.7, page 54.
 function IN(x) {
-  if (x == null || (!IS_OBJECT(x) && !IS_FUNCTION(x))) {
+  if (!IS_SPEC_OBJECT(x)) {
     throw %MakeTypeError('invalid_in_operator_use', [this, x]);
   }
   return %_IsNonNegativeSmi(this) ? %HasElement(x, this) : %HasProperty(x, %ToString(this));
@@ -353,13 +363,13 @@ function INSTANCE_OF(F) {
   }
 
   // If V is not an object, return false.
-  if (IS_NULL(V) || (!IS_OBJECT(V) && !IS_FUNCTION(V))) {
+  if (!IS_SPEC_OBJECT(V)) {
     return 1;
   }
 
   // Get the prototype of F; if it is not an object, throw an error.
   var O = F.prototype;
-  if (IS_NULL(O) || (!IS_OBJECT(O) && !IS_FUNCTION(O))) {
+  if (!IS_SPEC_OBJECT(O)) {
     throw %MakeTypeError('instanceof_nonobject_proto', [O]);
   }
 
@@ -377,35 +387,29 @@ function GET_KEYS() {
 
 // Filter a given key against an object by checking if the object
 // has a property with the given key; return the key as a string if
-// it has. Otherwise returns null. Used in for-in statements.
+// it has. Otherwise returns 0 (smi). Used in for-in statements.
 function FILTER_KEY(key) {
   var string = %ToString(key);
   if (%HasProperty(this, string)) return string;
-  return null;
+  return 0;
 }
 
 
 function CALL_NON_FUNCTION() {
-  var callee = %GetCalledFunction();
-  var delegate = %GetFunctionDelegate(callee);
+  var delegate = %GetFunctionDelegate(this);
   if (!IS_FUNCTION(delegate)) {
-    throw %MakeTypeError('called_non_callable', [typeof callee]);
+    throw %MakeTypeError('called_non_callable', [typeof this]);
   }
-
-  var parameters = %NewArguments(delegate);
-  return delegate.apply(callee, parameters);
+  return delegate.apply(this, arguments);
 }
 
 
 function CALL_NON_FUNCTION_AS_CONSTRUCTOR() {
-  var callee = %GetCalledFunction();
-  var delegate = %GetConstructorDelegate(callee);
+  var delegate = %GetConstructorDelegate(this);
   if (!IS_FUNCTION(delegate)) {
-    throw %MakeTypeError('called_non_callable', [typeof callee]);
+    throw %MakeTypeError('called_non_callable', [typeof this]);
   }
-
-  var parameters = %NewArguments(delegate);
-  return delegate.apply(callee, parameters);
+  return delegate.apply(this, arguments);
 }
 
 
@@ -427,7 +431,7 @@ function APPLY_PREPARE(args) {
   // big enough, but sanity check the value to avoid overflow when
   // multiplying with pointer size.
   if (length > 0x800000) {
-    throw %MakeRangeError('apply_overflow', [length]);
+    throw %MakeRangeError('stack_overflow', []);
   }
 
   if (!IS_FUNCTION(this)) {
@@ -446,7 +450,7 @@ function APPLY_PREPARE(args) {
 
 
 function APPLY_OVERFLOW(length) {
-  throw %MakeRangeError('apply_overflow', [length]);
+  throw %MakeRangeError('stack_overflow', []);
 }
 
 
@@ -479,34 +483,13 @@ function ToPrimitive(x, hint) {
   // Fast case check.
   if (IS_STRING(x)) return x;
   // Normal behavior.
-  if (!IS_OBJECT(x) && !IS_FUNCTION(x)) return x;
-  if (x == null) return x;  // check for null, undefined
+  if (!IS_SPEC_OBJECT(x)) return x;
   if (hint == NO_HINT) hint = (IS_DATE(x)) ? STRING_HINT : NUMBER_HINT;
   return (hint == NUMBER_HINT) ? %DefaultNumber(x) : %DefaultString(x);
 }
 
 
-// ECMA-262, section 9.3, page 31.
-function ToNumber(x) {
-  if (IS_NUMBER(x)) return x;
-  if (IS_STRING(x)) return %StringToNumber(x);
-  if (IS_BOOLEAN(x)) return x ? 1 : 0;
-  if (IS_UNDEFINED(x)) return $NaN;
-  return (IS_NULL(x)) ? 0 : ToNumber(%DefaultNumber(x));
-}
-
-
-// ECMA-262, section 9.8, page 35.
-function ToString(x) {
-  if (IS_STRING(x)) return x;
-  if (IS_NUMBER(x)) return %NumberToString(x);
-  if (IS_BOOLEAN(x)) return x ? 'true' : 'false';
-  if (IS_UNDEFINED(x)) return 'undefined';
-  return (IS_NULL(x)) ? 'null' : %ToString(%DefaultString(x));
-}
-
-
-// ... where did this come from?
+// ECMA-262, section 9.2, page 30
 function ToBoolean(x) {
   if (IS_BOOLEAN(x)) return x;
   if (IS_STRING(x)) return x.length != 0;
@@ -516,12 +499,54 @@ function ToBoolean(x) {
 }
 
 
+// ECMA-262, section 9.3, page 31.
+function ToNumber(x) {
+  if (IS_NUMBER(x)) return x;
+  if (IS_STRING(x)) {
+    return %_HasCachedArrayIndex(x) ? %_GetCachedArrayIndex(x)
+                                    : %StringToNumber(x);
+  }
+  if (IS_BOOLEAN(x)) return x ? 1 : 0;
+  if (IS_UNDEFINED(x)) return $NaN;
+  return (IS_NULL(x)) ? 0 : ToNumber(%DefaultNumber(x));
+}
+
+function NonNumberToNumber(x) {
+  if (IS_STRING(x)) {
+    return %_HasCachedArrayIndex(x) ? %_GetCachedArrayIndex(x)
+                                    : %StringToNumber(x);
+  }
+  if (IS_BOOLEAN(x)) return x ? 1 : 0;
+  if (IS_UNDEFINED(x)) return $NaN;
+  return (IS_NULL(x)) ? 0 : ToNumber(%DefaultNumber(x));
+}
+
+
+// ECMA-262, section 9.8, page 35.
+function ToString(x) {
+  if (IS_STRING(x)) return x;
+  if (IS_NUMBER(x)) return %_NumberToString(x);
+  if (IS_BOOLEAN(x)) return x ? 'true' : 'false';
+  if (IS_UNDEFINED(x)) return 'undefined';
+  return (IS_NULL(x)) ? 'null' : %ToString(%DefaultString(x));
+}
+
+function NonStringToString(x) {
+  if (IS_NUMBER(x)) return %_NumberToString(x);
+  if (IS_BOOLEAN(x)) return x ? 'true' : 'false';
+  if (IS_UNDEFINED(x)) return 'undefined';
+  return (IS_NULL(x)) ? 'null' : %ToString(%DefaultString(x));
+}
+
+
 // ECMA-262, section 9.9, page 36.
 function ToObject(x) {
   if (IS_STRING(x)) return new $String(x);
   if (IS_NUMBER(x)) return new $Number(x);
   if (IS_BOOLEAN(x)) return new $Boolean(x);
-  if (x == null) throw %MakeTypeError('null_to_object', []);
+  if (IS_NULL_OR_UNDEFINED(x) && !IS_UNDETECTABLE(x)) {
+    throw %MakeTypeError('null_to_object', []);
+  }
   return x;
 }
 
@@ -547,6 +572,17 @@ function ToInt32(x) {
 }
 
 
+// ES5, section 9.12
+function SameValue(x, y) {
+  if (typeof x != typeof y) return false;
+  if (IS_NUMBER(x)) {
+    if (NUMBER_IS_NAN(x) && NUMBER_IS_NAN(y)) return true;
+    // x is +0 and y is -0 or vice versa.
+    if (x === 0 && y === 0 && (1 / x) != (1 / y)) return false;
+  }
+  return x === y;
+}
+
 
 /* ---------------------------------
    - - -   U t i l i t i e s   - - -
@@ -556,25 +592,24 @@ function ToInt32(x) {
 // Returns if the given x is a primitive value - not an object or a
 // function.
 function IsPrimitive(x) {
-  if (!IS_OBJECT(x) && !IS_FUNCTION(x)) {
-    return true;
-  } else {
-    // Even though the type of null is "object", null is still
-    // considered a primitive value.
-    return IS_NULL(x);
-  }
+  // Even though the type of null is "object", null is still
+  // considered a primitive value. IS_SPEC_OBJECT handles this correctly
+  // (i.e., it will return false if x is null).
+  return !IS_SPEC_OBJECT(x);
 }
 
 
 // ECMA-262, section 8.6.2.6, page 28.
 function DefaultNumber(x) {
-  if (IS_FUNCTION(x.valueOf)) {
-    var v = x.valueOf();
+  var valueOf = x.valueOf;
+  if (IS_FUNCTION(valueOf)) {
+    var v = %_CallFunction(x, valueOf);
     if (%IsPrimitive(v)) return v;
   }
 
-  if (IS_FUNCTION(x.toString)) {
-    var s = x.toString();
+  var toString = x.toString;
+  if (IS_FUNCTION(toString)) {
+    var s = %_CallFunction(x, toString);
     if (%IsPrimitive(s)) return s;
   }
 
@@ -584,13 +619,15 @@ function DefaultNumber(x) {
 
 // ECMA-262, section 8.6.2.6, page 28.
 function DefaultString(x) {
-  if (IS_FUNCTION(x.toString)) {
-    var s = x.toString();
+  var toString = x.toString;
+  if (IS_FUNCTION(toString)) {
+    var s = %_CallFunction(x, toString);
     if (%IsPrimitive(s)) return s;
   }
 
-  if (IS_FUNCTION(x.valueOf)) {
-    var v = x.valueOf();
+  var valueOf = x.valueOf;
+  if (IS_FUNCTION(valueOf)) {
+    var v = %_CallFunction(x, valueOf);
     if (%IsPrimitive(v)) return v;
   }
 

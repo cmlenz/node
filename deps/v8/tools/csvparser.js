@@ -26,30 +26,25 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-// Initlialize namespaces.
-var devtools = devtools || {};
-devtools.profiler = devtools.profiler || {};
-
-
 /**
  * Creates a CSV lines parser.
  */
-devtools.profiler.CsvParser = function() {
+function CsvParser() {
 };
 
 
 /**
- * A regex for matching a trailing quote.
+ * A regex for matching a CSV field.
  * @private
  */
-devtools.profiler.CsvParser.TRAILING_QUOTE_RE_ = /\"$/;
+CsvParser.CSV_FIELD_RE_ = /^"((?:[^"]|"")*)"|([^,]*)/;
 
 
 /**
  * A regex for matching a double quote.
  * @private
  */
-devtools.profiler.CsvParser.DOUBLE_QUOTE_RE_ = /\"\"/g;
+CsvParser.DOUBLE_QUOTE_RE_ = /""/g;
 
 
 /**
@@ -57,42 +52,27 @@ devtools.profiler.CsvParser.DOUBLE_QUOTE_RE_ = /\"\"/g;
  *
  * @param {string} line Input line.
  */
-devtools.profiler.CsvParser.prototype.parseLine = function(line) {
-  var insideQuotes = false;
+CsvParser.prototype.parseLine = function(line) {
+  var fieldRe = CsvParser.CSV_FIELD_RE_;
+  var doubleQuoteRe = CsvParser.DOUBLE_QUOTE_RE_;
+  var pos = 0;
+  var endPos = line.length;
   var fields = [];
-  var prevPos = 0;
-  for (var i = 0, n = line.length; i < n; ++i) {
-    switch (line.charAt(i)) {
-      case ',':
-        if (!insideQuotes) {
-          fields.push(line.substring(prevPos, i));
-          prevPos = i + 1;
-        }
-        break;
-      case '"':
-        if (!insideQuotes) {
-          insideQuotes = true;
-          // Skip the leading quote.
-          prevPos++;
-        } else {
-          if (i + 1 < n && line.charAt(i + 1) != '"') {
-            insideQuotes = false;
-          } else {
-            i++;
-          }
-        }
-        break;
-    }
-  }
-  if (n > 0) {
-    fields.push(line.substring(prevPos));
-  }
-
-  for (i = 0; i < fields.length; ++i) {
-    // Eliminate trailing quotes.
-    fields[i] = fields[i].replace(devtools.profiler.CsvParser.TRAILING_QUOTE_RE_, '');
-    // Convert quoted quotes into single ones.
-    fields[i] = fields[i].replace(devtools.profiler.CsvParser.DOUBLE_QUOTE_RE_, '"');
+  if (endPos > 0) {
+    do {
+      var fieldMatch = fieldRe.exec(line.substr(pos));
+      if (typeof fieldMatch[1] === "string") {
+        var field = fieldMatch[1];
+        pos += field.length + 3;  // Skip comma and quotes.
+        fields.push(field.replace(doubleQuoteRe, '"'));
+      } else {
+        // The second field pattern will match anything, thus
+        // in the worst case the match will be an empty string.
+        var field = fieldMatch[2];
+        pos += field.length + 1;  // Skip comma.
+        fields.push(field);
+      }
+    } while (pos <= endPos);
   }
   return fields;
 };

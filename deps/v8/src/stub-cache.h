@@ -29,6 +29,7 @@
 #define V8_STUB_CACHE_H_
 
 #include "macro-assembler.h"
+#include "zone-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -44,6 +45,7 @@ namespace internal {
 
 class SCTableReference;
 
+
 class StubCache : public AllStatic {
  public:
   struct Entry {
@@ -56,138 +58,216 @@ class StubCache : public AllStatic {
 
   // Computes the right stub matching. Inserts the result in the
   // cache before returning.  This might compile a stub if needed.
-  static Object* ComputeLoadField(String* name,
-                                  JSObject* receiver,
-                                  JSObject* holder,
-                                  int field_index);
+  MUST_USE_RESULT static MaybeObject* ComputeLoadNonexistent(
+      String* name,
+      JSObject* receiver);
 
-  static Object* ComputeLoadCallback(String* name,
-                                     JSObject* receiver,
-                                     JSObject* holder,
-                                     AccessorInfo* callback);
+  MUST_USE_RESULT static MaybeObject* ComputeLoadField(String* name,
+                                                       JSObject* receiver,
+                                                       JSObject* holder,
+                                                       int field_index);
 
-  static Object* ComputeLoadConstant(String* name,
-                                     JSObject* receiver,
-                                     JSObject* holder,
-                                     Object* value);
+  MUST_USE_RESULT static MaybeObject* ComputeLoadCallback(
+      String* name,
+      JSObject* receiver,
+      JSObject* holder,
+      AccessorInfo* callback);
 
-  static Object* ComputeLoadInterceptor(String* name,
-                                        JSObject* receiver,
-                                        JSObject* holder);
+  MUST_USE_RESULT static MaybeObject* ComputeLoadConstant(String* name,
+                                                          JSObject* receiver,
+                                                          JSObject* holder,
+                                                          Object* value);
 
-  static Object* ComputeLoadNormal(String* name, JSObject* receiver);
+  MUST_USE_RESULT static MaybeObject* ComputeLoadInterceptor(
+      String* name,
+      JSObject* receiver,
+      JSObject* holder);
+
+  MUST_USE_RESULT static MaybeObject* ComputeLoadNormal();
 
 
-  static Object* ComputeLoadGlobal(String* name,
-                                   JSObject* receiver,
-                                   GlobalObject* holder,
-                                   JSGlobalPropertyCell* cell,
-                                   bool is_dont_delete);
+  MUST_USE_RESULT static MaybeObject* ComputeLoadGlobal(
+      String* name,
+      JSObject* receiver,
+      GlobalObject* holder,
+      JSGlobalPropertyCell* cell,
+      bool is_dont_delete);
 
-
-  // ---
-
-  static Object* ComputeKeyedLoadField(String* name,
-                                       JSObject* receiver,
-                                       JSObject* holder,
-                                       int field_index);
-
-  static Object* ComputeKeyedLoadCallback(String* name,
-                                          JSObject* receiver,
-                                          JSObject* holder,
-                                          AccessorInfo* callback);
-
-  static Object* ComputeKeyedLoadConstant(String* name, JSObject* receiver,
-                                          JSObject* holder, Object* value);
-
-  static Object* ComputeKeyedLoadInterceptor(String* name,
-                                             JSObject* receiver,
-                                             JSObject* holder);
-
-  static Object* ComputeKeyedLoadArrayLength(String* name, JSArray* receiver);
-
-  static Object* ComputeKeyedLoadStringLength(String* name,
-                                              String* receiver);
-
-  static Object* ComputeKeyedLoadFunctionPrototype(String* name,
-                                                   JSFunction* receiver);
 
   // ---
 
-  static Object* ComputeStoreField(String* name,
-                                   JSObject* receiver,
-                                   int field_index,
-                                   Map* transition = NULL);
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadField(String* name,
+                                                            JSObject* receiver,
+                                                            JSObject* holder,
+                                                            int field_index);
 
-  static Object* ComputeStoreGlobal(String* name,
-                                    GlobalObject* receiver,
-                                    JSGlobalPropertyCell* cell);
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadCallback(
+      String* name,
+      JSObject* receiver,
+      JSObject* holder,
+      AccessorInfo* callback);
 
-  static Object* ComputeStoreCallback(String* name,
-                                      JSObject* receiver,
-                                      AccessorInfo* callback);
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadConstant(
+      String* name,
+      JSObject* receiver,
+      JSObject* holder,
+      Object* value);
 
-  static Object* ComputeStoreInterceptor(String* name, JSObject* receiver);
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadInterceptor(
+      String* name,
+      JSObject* receiver,
+      JSObject* holder);
 
-  // ---
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadArrayLength(
+      String* name,
+      JSArray* receiver);
 
-  static Object* ComputeKeyedStoreField(String* name,
-                                        JSObject* receiver,
-                                        int field_index,
-                                        Map* transition = NULL);
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadStringLength(
+      String* name,
+      String* receiver);
 
-  // ---
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadFunctionPrototype(
+      String* name,
+      JSFunction* receiver);
 
-  static Object* ComputeCallField(int argc,
-                                  InLoopFlag in_loop,
-                                  String* name,
-                                  Object* object,
-                                  JSObject* holder,
-                                  int index);
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadSpecialized(
+      JSObject* receiver);
 
-  static Object* ComputeCallConstant(int argc,
-                                     InLoopFlag in_loop,
-                                     String* name,
-                                     Object* object,
-                                     JSObject* holder,
-                                     JSFunction* function);
-
-  static Object* ComputeCallNormal(int argc,
-                                   InLoopFlag in_loop,
-                                   String* name,
-                                   JSObject* receiver);
-
-  static Object* ComputeCallInterceptor(int argc,
-                                        String* name,
-                                        Object* object,
-                                        JSObject* holder);
-
-  static Object* ComputeCallGlobal(int argc,
-                                   InLoopFlag in_loop,
-                                   String* name,
-                                   JSObject* receiver,
-                                   GlobalObject* holder,
-                                   JSGlobalPropertyCell* cell,
-                                   JSFunction* function);
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadPixelArray(
+      JSObject* receiver);
 
   // ---
 
-  static Object* ComputeCallInitialize(int argc, InLoopFlag in_loop);
-  static Object* ComputeCallPreMonomorphic(int argc, InLoopFlag in_loop);
-  static Object* ComputeCallNormal(int argc, InLoopFlag in_loop);
-  static Object* ComputeCallMegamorphic(int argc, InLoopFlag in_loop);
-  static Object* ComputeCallMiss(int argc);
+  MUST_USE_RESULT static MaybeObject* ComputeStoreField(
+      String* name,
+      JSObject* receiver,
+      int field_index,
+      Map* transition,
+      StrictModeFlag strict_mode);
+
+  MUST_USE_RESULT static MaybeObject* ComputeStoreNormal(
+      StrictModeFlag strict_mode);
+
+  MUST_USE_RESULT static MaybeObject* ComputeStoreGlobal(
+      String* name,
+      GlobalObject* receiver,
+      JSGlobalPropertyCell* cell,
+      StrictModeFlag strict_mode);
+
+  MUST_USE_RESULT static MaybeObject* ComputeStoreCallback(
+      String* name,
+      JSObject* receiver,
+      AccessorInfo* callback,
+      StrictModeFlag strict_mode);
+
+  MUST_USE_RESULT static MaybeObject* ComputeStoreInterceptor(
+      String* name,
+      JSObject* receiver,
+      StrictModeFlag strict_mode);
+
+  // ---
+
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedStoreField(
+      String* name,
+      JSObject* receiver,
+      int field_index,
+      Map* transition,
+      StrictModeFlag strict_mode);
+
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedStoreSpecialized(
+      JSObject* receiver,
+      StrictModeFlag strict_mode);
+
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedStorePixelArray(
+      JSObject* receiver,
+      StrictModeFlag strict_mode);
+
+  MUST_USE_RESULT static MaybeObject* ComputeKeyedLoadOrStoreExternalArray(
+      JSObject* receiver,
+      bool is_store,
+      StrictModeFlag strict_mode);
+
+  // ---
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallField(int argc,
+                                                       InLoopFlag in_loop,
+                                                       Code::Kind,
+                                                       String* name,
+                                                       Object* object,
+                                                       JSObject* holder,
+                                                       int index);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallConstant(
+      int argc,
+      InLoopFlag in_loop,
+      Code::Kind,
+      Code::ExtraICState extra_ic_state,
+      String* name,
+      Object* object,
+      JSObject* holder,
+      JSFunction* function);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallNormal(int argc,
+                                                        InLoopFlag in_loop,
+                                                        Code::Kind,
+                                                        String* name,
+                                                        JSObject* receiver);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallInterceptor(int argc,
+                                                             Code::Kind,
+                                                             String* name,
+                                                             Object* object,
+                                                             JSObject* holder);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallGlobal(
+      int argc,
+      InLoopFlag in_loop,
+      Code::Kind,
+      String* name,
+      JSObject* receiver,
+      GlobalObject* holder,
+      JSGlobalPropertyCell* cell,
+      JSFunction* function);
+
+  // ---
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallInitialize(int argc,
+                                                            InLoopFlag in_loop,
+                                                            Code::Kind kind);
+
+  static Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
+
+  static Handle<Code> ComputeKeyedCallInitialize(int argc, InLoopFlag in_loop);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallPreMonomorphic(
+      int argc,
+      InLoopFlag in_loop,
+      Code::Kind kind);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallNormal(int argc,
+                                                        InLoopFlag in_loop,
+                                                        Code::Kind kind);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallMegamorphic(int argc,
+                                                             InLoopFlag in_loop,
+                                                             Code::Kind kind);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallMiss(int argc,
+                                                      Code::Kind kind);
 
   // Finds the Code object stored in the Heap::non_monomorphic_cache().
-  static Code* FindCallInitialize(int argc, InLoopFlag in_loop);
+  MUST_USE_RESULT static Code* FindCallInitialize(int argc,
+                                                  InLoopFlag in_loop,
+                                                  Code::Kind kind);
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
-  static Object* ComputeCallDebugBreak(int argc);
-  static Object* ComputeCallDebugPrepareStepIn(int argc);
+  MUST_USE_RESULT static MaybeObject* ComputeCallDebugBreak(int argc,
+                                                            Code::Kind kind);
+
+  MUST_USE_RESULT static MaybeObject* ComputeCallDebugPrepareStepIn(
+      int argc,
+      Code::Kind kind);
 #endif
-
-  static Object* ComputeLazyCompile(int argc);
-
 
   // Update cache for entry hash(name, map).
   static Code* Set(String* name, Map* map, Code* code);
@@ -195,17 +275,21 @@ class StubCache : public AllStatic {
   // Clear the lookup table (@ mark compact collection).
   static void Clear();
 
-  // Functions for generating stubs at startup.
-  static void GenerateMiss(MacroAssembler* masm);
+  // Collect all maps that match the name and flags.
+  static void CollectMatchingMaps(ZoneMapList* types,
+                                  String* name,
+                                  Code::Flags flags);
 
   // Generate code for probing the stub cache table.
-  // If extra != no_reg it might be used as am extra scratch register.
+  // Arguments extra and extra2 may be used to pass additional scratch
+  // registers. Set to no_reg if not needed.
   static void GenerateProbe(MacroAssembler* masm,
                             Code::Flags flags,
                             Register receiver,
                             Register name,
                             Register scratch,
-                            Register extra);
+                            Register extra,
+                            Register extra2 = no_reg);
 
   enum Table {
     kPrimary,
@@ -302,50 +386,50 @@ class SCTableReference {
 
 
 // Support functions for IC stubs for callbacks.
-Object* LoadCallbackProperty(Arguments args);
-Object* StoreCallbackProperty(Arguments args);
+MaybeObject* LoadCallbackProperty(Arguments args);
+MaybeObject* StoreCallbackProperty(Arguments args);
 
 
 // Support functions for IC stubs for interceptors.
-Object* LoadPropertyWithInterceptorOnly(Arguments args);
-Object* LoadPropertyWithInterceptorForLoad(Arguments args);
-Object* LoadPropertyWithInterceptorForCall(Arguments args);
-Object* StoreInterceptorProperty(Arguments args);
-Object* CallInterceptorProperty(Arguments args);
-
-
-// Support function for computing call IC miss stubs.
-Handle<Code> ComputeCallMiss(int argc);
+MaybeObject* LoadPropertyWithInterceptorOnly(Arguments args);
+MaybeObject* LoadPropertyWithInterceptorForLoad(Arguments args);
+MaybeObject* LoadPropertyWithInterceptorForCall(Arguments args);
+MaybeObject* StoreInterceptorProperty(Arguments args);
+MaybeObject* CallInterceptorProperty(Arguments args);
+MaybeObject* KeyedLoadPropertyWithInterceptor(Arguments args);
 
 
 // The stub compiler compiles stubs for the stub cache.
 class StubCompiler BASE_EMBEDDED {
  public:
-  enum CheckType {
-    RECEIVER_MAP_CHECK,
-    STRING_CHECK,
-    NUMBER_CHECK,
-    BOOLEAN_CHECK,
-    JSARRAY_HAS_FAST_ELEMENTS_CHECK
-  };
-
   StubCompiler() : scope_(), masm_(NULL, 256), failure_(NULL) { }
 
-  Object* CompileCallInitialize(Code::Flags flags);
-  Object* CompileCallPreMonomorphic(Code::Flags flags);
-  Object* CompileCallNormal(Code::Flags flags);
-  Object* CompileCallMegamorphic(Code::Flags flags);
-  Object* CompileCallMiss(Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileCallInitialize(Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileCallPreMonomorphic(Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileCallNormal(Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileCallMegamorphic(Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileCallMiss(Code::Flags flags);
 #ifdef ENABLE_DEBUGGER_SUPPORT
-  Object* CompileCallDebugBreak(Code::Flags flags);
-  Object* CompileCallDebugPrepareStepIn(Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileCallDebugBreak(Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileCallDebugPrepareStepIn(Code::Flags flags);
 #endif
-  Object* CompileLazyCompile(Code::Flags flags);
 
   // Static functions for generating parts of stubs.
   static void GenerateLoadGlobalFunctionPrototype(MacroAssembler* masm,
                                                   int index,
                                                   Register prototype);
+
+  // Generates prototype loading code that uses the objects from the
+  // context we were in when this function was called. If the context
+  // has changed, a jump to miss is performed. This ties the generated
+  // code to a particular context and so must not be used in cases
+  // where the generated code is not allowed to have references to
+  // objects from a context.
+  static void GenerateDirectLoadGlobalFunctionPrototype(MacroAssembler* masm,
+                                                        int index,
+                                                        Register prototype,
+                                                        Label* miss);
+
   static void GenerateFastPropertyLoad(MacroAssembler* masm,
                                        Register dst, Register src,
                                        JSObject* holder, int index);
@@ -354,22 +438,21 @@ class StubCompiler BASE_EMBEDDED {
                                       Register receiver,
                                       Register scratch,
                                       Label* miss_label);
+
   static void GenerateLoadStringLength(MacroAssembler* masm,
                                        Register receiver,
-                                       Register scratch,
-                                       Label* miss_label);
-  static void GenerateLoadStringLength2(MacroAssembler* masm,
-                                        Register receiver,
-                                        Register scratch1,
-                                        Register scratch2,
-                                        Label* miss_label);
+                                       Register scratch1,
+                                       Register scratch2,
+                                       Label* miss_label,
+                                       bool support_wrappers);
+
   static void GenerateLoadFunctionPrototype(MacroAssembler* masm,
                                             Register receiver,
                                             Register scratch1,
                                             Register scratch2,
                                             Label* miss_label);
+
   static void GenerateStoreField(MacroAssembler* masm,
-                                 Builtins::Name storage_extend,
                                  JSObject* object,
                                  int index,
                                  Map* transition,
@@ -377,21 +460,50 @@ class StubCompiler BASE_EMBEDDED {
                                  Register name_reg,
                                  Register scratch,
                                  Label* miss_label);
+
   static void GenerateLoadMiss(MacroAssembler* masm, Code::Kind kind);
 
-  // Check the integrity of the prototype chain to make sure that the
-  // current IC is still valid.
+  // Generates code that verifies that the property holder has not changed
+  // (checking maps of objects in the prototype chain for fast and global
+  // objects or doing negative lookup for slow objects, ensures that the
+  // property cells for global objects are still empty) and checks that the map
+  // of the holder has not changed. If necessary the function also generates
+  // code for security check in case of global object holders. Helps to make
+  // sure that the current IC is still valid.
+  //
+  // The scratch and holder registers are always clobbered, but the object
+  // register is only clobbered if it the same as the holder register. The
+  // function returns a register containing the holder - either object_reg or
+  // holder_reg.
+  // The function can optionally (when save_at_depth !=
+  // kInvalidProtoDepth) save the object at the given depth by moving
+  // it to [esp + kPointerSize].
+
   Register CheckPrototypes(JSObject* object,
                            Register object_reg,
                            JSObject* holder,
                            Register holder_reg,
-                           Register scratch,
+                           Register scratch1,
+                           Register scratch2,
                            String* name,
+                           Label* miss) {
+    return CheckPrototypes(object, object_reg, holder, holder_reg, scratch1,
+                           scratch2, name, kInvalidProtoDepth, miss);
+  }
+
+  Register CheckPrototypes(JSObject* object,
+                           Register object_reg,
+                           JSObject* holder,
+                           Register holder_reg,
+                           Register scratch1,
+                           Register scratch2,
+                           String* name,
+                           int save_at_depth,
                            Label* miss);
 
  protected:
-  Object* GetCodeWithFlags(Code::Flags flags, const char* name);
-  Object* GetCodeWithFlags(Code::Flags flags, String* name);
+  MaybeObject* GetCodeWithFlags(Code::Flags flags, const char* name);
+  MaybeObject* GetCodeWithFlags(Code::Flags flags, String* name);
 
   MacroAssembler* masm() { return &masm_; }
   void set_failure(Failure* failure) { failure_ = failure; }
@@ -401,25 +513,28 @@ class StubCompiler BASE_EMBEDDED {
                          Register receiver,
                          Register scratch1,
                          Register scratch2,
+                         Register scratch3,
                          int index,
                          String* name,
                          Label* miss);
 
-  void GenerateLoadCallback(JSObject* object,
-                            JSObject* holder,
-                            Register receiver,
-                            Register name_reg,
-                            Register scratch1,
-                            Register scratch2,
-                            AccessorInfo* callback,
-                            String* name,
-                            Label* miss);
+  MaybeObject* GenerateLoadCallback(JSObject* object,
+                                    JSObject* holder,
+                                    Register receiver,
+                                    Register name_reg,
+                                    Register scratch1,
+                                    Register scratch2,
+                                    Register scratch3,
+                                    AccessorInfo* callback,
+                                    String* name,
+                                    Label* miss);
 
   void GenerateLoadConstant(JSObject* object,
                             JSObject* holder,
                             Register receiver,
                             Register scratch1,
                             Register scratch2,
+                            Register scratch3,
                             Object* value,
                             String* name,
                             Label* miss);
@@ -431,8 +546,13 @@ class StubCompiler BASE_EMBEDDED {
                                Register name_reg,
                                Register scratch1,
                                Register scratch2,
+                               Register scratch3,
                                String* name,
                                Label* miss);
+
+  static void LookupPostInterceptor(JSObject* holder,
+                                    String* name,
+                                    LookupResult* lookup);
 
  private:
   HandleScope scope_;
@@ -443,121 +563,211 @@ class StubCompiler BASE_EMBEDDED {
 
 class LoadStubCompiler: public StubCompiler {
  public:
-  Object* CompileLoadField(JSObject* object,
-                           JSObject* holder,
-                           int index,
-                           String* name);
-  Object* CompileLoadCallback(JSObject* object,
-                              JSObject* holder,
-                              AccessorInfo* callback,
-                              String* name);
-  Object* CompileLoadConstant(JSObject* object,
-                              JSObject* holder,
-                              Object* value,
-                              String* name);
-  Object* CompileLoadInterceptor(JSObject* object,
-                                 JSObject* holder,
-                                 String* name);
+  MUST_USE_RESULT MaybeObject* CompileLoadNonexistent(String* name,
+                                                      JSObject* object,
+                                                      JSObject* last);
 
-  Object* CompileLoadGlobal(JSObject* object,
-                            GlobalObject* holder,
-                            JSGlobalPropertyCell* cell,
-                            String* name,
-                            bool is_dont_delete);
+  MUST_USE_RESULT MaybeObject* CompileLoadField(JSObject* object,
+                                                JSObject* holder,
+                                                int index,
+                                                String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadCallback(String* name,
+                                                   JSObject* object,
+                                                   JSObject* holder,
+                                                   AccessorInfo* callback);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadConstant(JSObject* object,
+                                                   JSObject* holder,
+                                                   Object* value,
+                                                   String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadInterceptor(JSObject* object,
+                                                      JSObject* holder,
+                                                      String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadGlobal(JSObject* object,
+                                                 GlobalObject* holder,
+                                                 JSGlobalPropertyCell* cell,
+                                                 String* name,
+                                                 bool is_dont_delete);
 
  private:
-  Object* GetCode(PropertyType type, String* name);
+  MUST_USE_RESULT MaybeObject* GetCode(PropertyType type, String* name);
 };
 
 
 class KeyedLoadStubCompiler: public StubCompiler {
  public:
-  Object* CompileLoadField(String* name,
-                           JSObject* object,
-                           JSObject* holder,
-                           int index);
-  Object* CompileLoadCallback(String* name,
-                              JSObject* object,
-                              JSObject* holder,
-                              AccessorInfo* callback);
-  Object* CompileLoadConstant(String* name,
-                              JSObject* object,
-                              JSObject* holder,
-                              Object* value);
-  Object* CompileLoadInterceptor(JSObject* object,
-                                 JSObject* holder,
-                                 String* name);
-  Object* CompileLoadArrayLength(String* name);
-  Object* CompileLoadStringLength(String* name);
-  Object* CompileLoadFunctionPrototype(String* name);
+  MUST_USE_RESULT MaybeObject* CompileLoadField(String* name,
+                                                JSObject* object,
+                                                JSObject* holder,
+                                                int index);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadCallback(String* name,
+                                                   JSObject* object,
+                                                   JSObject* holder,
+                                                   AccessorInfo* callback);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadConstant(String* name,
+                                                   JSObject* object,
+                                                   JSObject* holder,
+                                                   Object* value);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadInterceptor(JSObject* object,
+                                                      JSObject* holder,
+                                                      String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadArrayLength(String* name);
+  MUST_USE_RESULT MaybeObject* CompileLoadStringLength(String* name);
+  MUST_USE_RESULT MaybeObject* CompileLoadFunctionPrototype(String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadSpecialized(JSObject* receiver);
+  MUST_USE_RESULT MaybeObject* CompileLoadPixelArray(JSObject* receiver);
 
  private:
-  Object* GetCode(PropertyType type, String* name);
+  MaybeObject* GetCode(PropertyType type, String* name);
 };
 
 
 class StoreStubCompiler: public StubCompiler {
  public:
-  Object* CompileStoreField(JSObject* object,
-                            int index,
-                            Map* transition,
-                            String* name);
-  Object* CompileStoreCallback(JSObject* object,
-                               AccessorInfo* callbacks,
-                               String* name);
-  Object* CompileStoreInterceptor(JSObject* object, String* name);
-  Object* CompileStoreGlobal(GlobalObject* object,
-                             JSGlobalPropertyCell* holder,
-                             String* name);
+  explicit StoreStubCompiler(StrictModeFlag strict_mode)
+    : strict_mode_(strict_mode) { }
+
+  MUST_USE_RESULT MaybeObject* CompileStoreField(JSObject* object,
+                                                 int index,
+                                                 Map* transition,
+                                                 String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileStoreCallback(JSObject* object,
+                                                    AccessorInfo* callbacks,
+                                                    String* name);
+  MUST_USE_RESULT MaybeObject* CompileStoreInterceptor(JSObject* object,
+                                                       String* name);
+  MUST_USE_RESULT MaybeObject* CompileStoreGlobal(GlobalObject* object,
+                                                  JSGlobalPropertyCell* holder,
+                                                  String* name);
 
 
  private:
-  Object* GetCode(PropertyType type, String* name);
+  MaybeObject* GetCode(PropertyType type, String* name);
+
+  StrictModeFlag strict_mode_;
 };
 
 
 class KeyedStoreStubCompiler: public StubCompiler {
  public:
-  Object* CompileStoreField(JSObject* object,
-                            int index,
-                            Map* transition,
-                            String* name);
+  explicit KeyedStoreStubCompiler(StrictModeFlag strict_mode)
+    : strict_mode_(strict_mode) { }
+
+  MUST_USE_RESULT MaybeObject* CompileStoreField(JSObject* object,
+                                                 int index,
+                                                 Map* transition,
+                                                 String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileStoreSpecialized(JSObject* receiver);
+
+  MUST_USE_RESULT MaybeObject* CompileStorePixelArray(JSObject* receiver);
 
  private:
-  Object* GetCode(PropertyType type, String* name);
+  MaybeObject* GetCode(PropertyType type, String* name);
+
+  StrictModeFlag strict_mode_;
 };
+
+
+// Subset of FUNCTIONS_WITH_ID_LIST with custom constant/global call
+// IC stubs.
+#define CUSTOM_CALL_IC_GENERATORS(V)            \
+  V(ArrayPush)                                  \
+  V(ArrayPop)                                   \
+  V(StringCharCodeAt)                           \
+  V(StringCharAt)                               \
+  V(StringFromCharCode)                         \
+  V(MathFloor)                                  \
+  V(MathAbs)
 
 
 class CallStubCompiler: public StubCompiler {
  public:
-  explicit CallStubCompiler(int argc, InLoopFlag in_loop)
-      : arguments_(argc), in_loop_(in_loop) { }
+  CallStubCompiler(int argc,
+                   InLoopFlag in_loop,
+                   Code::Kind kind,
+                   Code::ExtraICState extra_ic_state,
+                   InlineCacheHolderFlag cache_holder);
 
-  Object* CompileCallField(Object* object,
-                           JSObject* holder,
-                           int index,
-                           String* name);
-  Object* CompileCallConstant(Object* object,
-                              JSObject* holder,
-                              JSFunction* function,
-                              String* name,
-                              CheckType check);
-  Object* CompileCallInterceptor(Object* object,
-                                 JSObject* holder,
-                                 String* name);
-  Object* CompileCallGlobal(JSObject* object,
-                            GlobalObject* holder,
-                            JSGlobalPropertyCell* cell,
-                            JSFunction* function,
-                            String* name);
+  MUST_USE_RESULT MaybeObject* CompileCallField(JSObject* object,
+                                                JSObject* holder,
+                                                int index,
+                                                String* name);
+  MUST_USE_RESULT MaybeObject* CompileCallConstant(Object* object,
+                                                   JSObject* holder,
+                                                   JSFunction* function,
+                                                   String* name,
+                                                   CheckType check);
+  MUST_USE_RESULT MaybeObject* CompileCallInterceptor(JSObject* object,
+                                                      JSObject* holder,
+                                                      String* name);
+  MUST_USE_RESULT MaybeObject* CompileCallGlobal(JSObject* object,
+                                                 GlobalObject* holder,
+                                                 JSGlobalPropertyCell* cell,
+                                                 JSFunction* function,
+                                                 String* name);
+
+  static bool HasCustomCallGenerator(BuiltinFunctionId id);
 
  private:
+  // Compiles a custom call constant/global IC. For constant calls
+  // cell is NULL. Returns undefined if there is no custom call code
+  // for the given function or it can't be generated.
+  MUST_USE_RESULT MaybeObject* CompileCustomCall(BuiltinFunctionId id,
+                                                 Object* object,
+                                                 JSObject* holder,
+                                                 JSGlobalPropertyCell* cell,
+                                                 JSFunction* function,
+                                                 String* name);
+
+#define DECLARE_CALL_GENERATOR(name)                                           \
+  MUST_USE_RESULT MaybeObject* Compile##name##Call(Object* object,             \
+                                                   JSObject* holder,           \
+                                                   JSGlobalPropertyCell* cell, \
+                                                   JSFunction* function,       \
+                                                   String* fname);
+  CUSTOM_CALL_IC_GENERATORS(DECLARE_CALL_GENERATOR)
+#undef DECLARE_CALL_GENERATOR
+
   const ParameterCount arguments_;
   const InLoopFlag in_loop_;
+  const Code::Kind kind_;
+  const Code::ExtraICState extra_ic_state_;
+  const InlineCacheHolderFlag cache_holder_;
 
   const ParameterCount& arguments() { return arguments_; }
 
-  Object* GetCode(PropertyType type, String* name);
+  MUST_USE_RESULT MaybeObject* GetCode(PropertyType type, String* name);
+
+  // Convenience function. Calls GetCode above passing
+  // CONSTANT_FUNCTION type and the name of the given function.
+  MUST_USE_RESULT MaybeObject* GetCode(JSFunction* function);
+
+  void GenerateNameCheck(String* name, Label* miss);
+
+  void GenerateGlobalReceiverCheck(JSObject* object,
+                                   JSObject* holder,
+                                   String* name,
+                                   Label* miss);
+
+  // Generates code to load the function from the cell checking that
+  // it still contains the same function.
+  void GenerateLoadFunctionFromCell(JSGlobalPropertyCell* cell,
+                                    JSFunction* function,
+                                    Label* miss);
+
+  // Generates a jump to CallIC miss stub. Returns Failure if the jump cannot
+  // be generated.
+  MUST_USE_RESULT MaybeObject* GenerateMissBranch();
 };
 
 
@@ -565,12 +775,74 @@ class ConstructStubCompiler: public StubCompiler {
  public:
   explicit ConstructStubCompiler() {}
 
-  Object* CompileConstructStub(SharedFunctionInfo* shared);
+  MUST_USE_RESULT MaybeObject* CompileConstructStub(JSFunction* function);
 
  private:
-  Object* GetCode();
+  MaybeObject* GetCode();
 };
 
+
+// Holds information about possible function call optimizations.
+class CallOptimization BASE_EMBEDDED {
+ public:
+  explicit CallOptimization(LookupResult* lookup);
+
+  explicit CallOptimization(JSFunction* function);
+
+  bool is_constant_call() const {
+    return constant_function_ != NULL;
+  }
+
+  JSFunction* constant_function() const {
+    ASSERT(constant_function_ != NULL);
+    return constant_function_;
+  }
+
+  bool is_simple_api_call() const {
+    return is_simple_api_call_;
+  }
+
+  FunctionTemplateInfo* expected_receiver_type() const {
+    ASSERT(is_simple_api_call_);
+    return expected_receiver_type_;
+  }
+
+  CallHandlerInfo* api_call_info() const {
+    ASSERT(is_simple_api_call_);
+    return api_call_info_;
+  }
+
+  // Returns the depth of the object having the expected type in the
+  // prototype chain between the two arguments.
+  int GetPrototypeDepthOfExpectedType(JSObject* object,
+                                      JSObject* holder) const;
+
+ private:
+  void Initialize(JSFunction* function);
+
+  // Determines whether the given function can be called using the
+  // fast api call builtin.
+  void AnalyzePossibleApiFunction(JSFunction* function);
+
+  JSFunction* constant_function_;
+  bool is_simple_api_call_;
+  FunctionTemplateInfo* expected_receiver_type_;
+  CallHandlerInfo* api_call_info_;
+};
+
+class ExternalArrayStubCompiler: public StubCompiler {
+ public:
+  explicit ExternalArrayStubCompiler() {}
+
+  MUST_USE_RESULT MaybeObject* CompileKeyedLoadStub(
+      ExternalArrayType array_type, Code::Flags flags);
+
+  MUST_USE_RESULT MaybeObject* CompileKeyedStoreStub(
+      ExternalArrayType array_type, Code::Flags flags);
+
+ private:
+  MaybeObject* GetCode(Code::Flags flags);
+};
 
 } }  // namespace v8::internal
 

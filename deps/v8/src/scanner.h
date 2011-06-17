@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,394 +30,163 @@
 
 #include "token.h"
 #include "char-predicates-inl.h"
+#include "scanner-base.h"
 
 namespace v8 {
 namespace internal {
 
-
-class UTF8Buffer {
+// A buffered character stream based on a random access character
+// source (ReadBlock can be called with pos_ pointing to any position,
+// even positions before the current).
+class BufferedUC16CharacterStream: public UC16CharacterStream {
  public:
-  UTF8Buffer();
-  ~UTF8Buffer();
+  BufferedUC16CharacterStream();
+  virtual ~BufferedUC16CharacterStream();
 
-  void AddChar(uc32 c) {
-    ASSERT_NOT_NULL(data_);
-    if (cursor_ <= limit_ &&
-        static_cast<unsigned>(c) <= unibrow::Utf8::kMaxOneByteChar) {
-      *cursor_++ = static_cast<char>(c);
-    } else {
-      AddCharSlow(c);
-    }
-  }
-
-  void Reset() {
-    if (data_ == NULL) {
-      data_ = NewArray<char>(kInitialCapacity);
-      limit_ = ComputeLimit(data_, kInitialCapacity);
-    }
-    cursor_ = data_;
-  }
-
-  int pos() const {
-    ASSERT_NOT_NULL(data_);
-    return static_cast<int>(cursor_ - data_);
-  }
-
-  char* data() const { return data_; }
-
- private:
-  static const int kInitialCapacity = 256;
-  char* data_;
-  char* cursor_;
-  char* limit_;
-
-  int Capacity() const {
-    ASSERT_NOT_NULL(data_);
-    return static_cast<int>(limit_ - data_) + unibrow::Utf8::kMaxEncodedSize;
-  }
-
-  static char* ComputeLimit(char* data, int capacity) {
-    return (data + capacity) - unibrow::Utf8::kMaxEncodedSize;
-  }
-
-  void AddCharSlow(uc32 c);
-};
-
-
-class UTF16Buffer {
- public:
-  UTF16Buffer();
-  virtual ~UTF16Buffer() {}
-
-  virtual void PushBack(uc32 ch) = 0;
-  // returns a value < 0 when the buffer end is reached
-  virtual uc32 Advance() = 0;
-  virtual void SeekForward(int pos) = 0;
-
-  int pos() const { return pos_; }
-  int size() const { return size_; }
-  Handle<String> SubString(int start, int end);
+  virtual void PushBack(uc32 character);
 
  protected:
-  Handle<String> data_;
-  int pos_;
-  int size_;
+  static const unsigned kBufferSize = 512;
+  static const unsigned kPushBackStepSize = 16;
+
+  virtual unsigned SlowSeekForward(unsigned delta);
+  virtual bool ReadBlock();
+  virtual void SlowPushBack(uc16 character);
+
+  virtual unsigned BufferSeekForward(unsigned delta) = 0;
+  virtual unsigned FillBuffer(unsigned position, unsigned length) = 0;
+
+  const uc16* pushback_limit_;
+  uc16 buffer_[kBufferSize];
 };
 
 
-class CharacterStreamUTF16Buffer: public UTF16Buffer {
+// Generic string stream.
+class GenericStringUC16CharacterStream: public BufferedUC16CharacterStream {
  public:
-  CharacterStreamUTF16Buffer();
-  virtual ~CharacterStreamUTF16Buffer() {}
-  void Initialize(Handle<String> data, unibrow::CharacterStream* stream);
-  virtual void PushBack(uc32 ch);
-  virtual uc32 Advance();
-  virtual void SeekForward(int pos);
+  GenericStringUC16CharacterStream(Handle<String> data,
+                                   unsigned start_position,
+                                   unsigned end_position);
+  virtual ~GenericStringUC16CharacterStream();
 
- private:
-  List<uc32> pushback_buffer_;
-  uc32 last_;
-  unibrow::CharacterStream* stream_;
+ protected:
+  virtual unsigned BufferSeekForward(unsigned delta);
+  virtual unsigned FillBuffer(unsigned position, unsigned length);
 
-  List<uc32>* pushback_buffer() { return &pushback_buffer_; }
+  Handle<String> string_;
+  unsigned start_position_;
+  unsigned length_;
 };
 
 
-class TwoByteStringUTF16Buffer: public UTF16Buffer {
+// UC16 stream based on a literal UTF-8 string.
+class Utf8ToUC16CharacterStream: public BufferedUC16CharacterStream {
  public:
-  TwoByteStringUTF16Buffer();
-  virtual ~TwoByteStringUTF16Buffer() {}
-  void Initialize(Handle<ExternalTwoByteString> data);
-  virtual void PushBack(uc32 ch);
-  virtual uc32 Advance();
-  virtual void SeekForward(int pos);
+  Utf8ToUC16CharacterStream(const byte* data, unsigned length);
+  virtual ~Utf8ToUC16CharacterStream();
 
- private:
-  const uint16_t* raw_data_;
+ protected:
+  virtual unsigned BufferSeekForward(unsigned delta);
+  virtual unsigned FillBuffer(unsigned char_position, unsigned length);
+  void SetRawPosition(unsigned char_position);
+
+  const byte* raw_data_;
+  unsigned raw_data_length_;  // Measured in bytes, not characters.
+  unsigned raw_data_pos_;
+  // The character position of the character at raw_data[raw_data_pos_].
+  // Not necessarily the same as pos_.
+  unsigned raw_character_position_;
 };
 
 
-class KeywordMatcher {
-//  Incrementally recognize keywords.
-//
-//  Recognized keywords:
-//      break case catch const* continue debugger* default delete do else
-//      finally false for function if in instanceof native* new null
-//      return switch this throw true try typeof var void while with
-//
-//  *: Actually "future reserved keywords". These are the only ones we
-//     recognized, the remaining are allowed as identifiers.
+// UTF16 buffer to read characters from an external string.
+class ExternalTwoByteStringUC16CharacterStream: public UC16CharacterStream {
  public:
-  KeywordMatcher() : state_(INITIAL), token_(Token::IDENTIFIER) {}
+  ExternalTwoByteStringUC16CharacterStream(Handle<ExternalTwoByteString> data,
+                                           int start_position,
+                                           int end_position);
+  virtual ~ExternalTwoByteStringUC16CharacterStream();
 
-  Token::Value token() { return token_; }
-
-  inline void AddChar(uc32 input) {
-    if (state_ != UNMATCHABLE) {
-      Step(input);
-    }
+  virtual void PushBack(uc32 character) {
+    ASSERT(buffer_cursor_ > raw_data_);
+    buffer_cursor_--;
+    pos_--;
   }
 
-  void Fail() {
-    token_ = Token::IDENTIFIER;
-    state_ = UNMATCHABLE;
+ protected:
+  virtual unsigned SlowSeekForward(unsigned delta) {
+    // Fast case always handles seeking.
+    return 0;
   }
-
- private:
-  enum State {
-    UNMATCHABLE,
-    INITIAL,
-    KEYWORD_PREFIX,
-    KEYWORD_MATCHED,
-    C,
-    CA,
-    CO,
-    CON,
-    D,
-    DE,
-    F,
-    I,
-    IN,
-    N,
-    T,
-    TH,
-    TR,
-    V,
-    W
-  };
-
-  struct FirstState {
-    const char* keyword;
-    State state;
-    Token::Value token;
-  };
-
-  // Range of possible first characters of a keyword.
-  static const unsigned int kFirstCharRangeMin = 'b';
-  static const unsigned int kFirstCharRangeMax = 'w';
-  static const unsigned int kFirstCharRangeLength =
-      kFirstCharRangeMax - kFirstCharRangeMin + 1;
-  // State map for first keyword character range.
-  static FirstState first_states_[kFirstCharRangeLength];
-
-  // Current state.
-  State state_;
-  // Token for currently added characters.
-  Token::Value token_;
-
-  // Matching a specific keyword string (there is only one possible valid
-  // keyword with the current prefix).
-  const char* keyword_;
-  int counter_;
-  Token::Value keyword_token_;
-
-  // If input equals keyword's character at position, continue matching keyword
-  // from that position.
-  inline bool MatchKeywordStart(uc32 input,
-                                const char* keyword,
-                                int position,
-                                Token::Value token_if_match) {
-    if (input == keyword[position]) {
-      state_ = KEYWORD_PREFIX;
-      this->keyword_ = keyword;
-      this->counter_ = position + 1;
-      this->keyword_token_ = token_if_match;
-      return true;
-    }
+  virtual bool ReadBlock() {
+    // Entire string is read at start.
     return false;
   }
-
-  // If input equals match character, transition to new state and return true.
-  inline bool MatchState(uc32 input, char match, State new_state) {
-    if (input == match) {
-      state_ = new_state;
-      return true;
-    }
-    return false;
-  }
-
-  inline bool MatchKeyword(uc32 input,
-                           char match,
-                           State new_state,
-                           Token::Value keyword_token) {
-    if (input == match) {  // Matched "do".
-      state_ = new_state;
-      token_ = keyword_token;
-      return true;
-    }
-    return false;
-  }
-
-  void Step(uc32 input);
+  Handle<ExternalTwoByteString> source_;
+  const uc16* raw_data_;  // Pointer to the actual array of characters.
 };
 
 
-class Scanner {
+// ----------------------------------------------------------------------------
+// V8JavaScriptScanner
+// JavaScript scanner getting its input from either a V8 String or a unicode
+// CharacterStream.
+
+class V8JavaScriptScanner : public JavaScriptScanner {
  public:
+  V8JavaScriptScanner();
+  void Initialize(UC16CharacterStream* source);
+};
 
-  typedef unibrow::Utf8InputBuffer<1024> Utf8Decoder;
 
-  // Construction
-  explicit Scanner(bool is_pre_parsing);
+class JsonScanner : public Scanner {
+ public:
+  JsonScanner();
 
-  // Initialize the Scanner to scan source:
-  void Init(Handle<String> source,
-            unibrow::CharacterStream* stream,
-            int position);
+  void Initialize(UC16CharacterStream* source);
 
   // Returns the next token.
   Token::Value Next();
 
-  // One token look-ahead (past the token returned by Next()).
-  Token::Value peek() const  { return next_.token; }
-
-  // Returns true if there was a line terminator before the peek'ed token.
-  bool has_line_terminator_before_next() const {
-    return has_line_terminator_before_next_;
+  // Returns the value of a number token.
+  double number() {
+    return number_;
   }
 
-  struct Location {
-    Location(int b, int e) : beg_pos(b), end_pos(e) { }
-    Location() : beg_pos(0), end_pos(0) { }
-    int beg_pos;
-    int end_pos;
-  };
 
-  // Returns the location information for the current token
-  // (the token returned by Next()).
-  Location location() const  { return current_.location; }
-  Location peek_location() const  { return next_.location; }
+ protected:
+  // Skip past JSON whitespace (only space, tab, newline and carrige-return).
+  bool SkipJsonWhiteSpace();
 
-  // Returns the literal string, if any, for the current token (the
-  // token returned by Next()). The string is 0-terminated and in
-  // UTF-8 format; they may contain 0-characters. Literal strings are
-  // collected for identifiers, strings, and numbers.
-  // These functions only give the correct result if the literal
-  // was scanned between calls to StartLiteral() and TerminateLiteral().
-  const char* literal_string() const {
-    return current_.literal_buffer->data();
-  }
-  int literal_length() const {
-    // Excluding terminal '\0' added by TerminateLiteral().
-    return current_.literal_buffer->pos() - 1;
-  }
+  // Scan a single JSON token. The JSON lexical grammar is specified in the
+  // ECMAScript 5 standard, section 15.12.1.1.
+  // Recognizes all of the single-character tokens directly, or calls a function
+  // to scan a number, string or identifier literal.
+  // The only allowed whitespace characters between tokens are tab,
+  // carriage-return, newline and space.
+  void ScanJson();
 
-  // Returns the literal string for the next token (the token that
-  // would be returned if Next() were called).
-  const char* next_literal_string() const {
-    return next_.literal_buffer->data();
-  }
-  // Returns the length of the next token (that would be returned if
-  // Next() were called).
-  int next_literal_length() const {
-    return next_.literal_buffer->pos() - 1;
-  }
+  // A JSON number (production JSONNumber) is a subset of the valid JavaScript
+  // decimal number literals.
+  // It includes an optional minus sign, must have at least one
+  // digit before and after a decimal point, may not have prefixed zeros (unless
+  // the integer part is zero), and may include an exponent part (e.g., "e-10").
+  // Hexadecimal and octal numbers are not allowed.
+  Token::Value ScanJsonNumber();
 
-  Vector<const char> next_literal() const {
-    return Vector<const char>(next_literal_string(),
-                              next_literal_length());
-  }
+  // A JSON string (production JSONString) is subset of valid JavaScript string
+  // literals. The string must only be double-quoted (not single-quoted), and
+  // the only allowed backslash-escapes are ", /, \, b, f, n, r, t and
+  // four-digit hex escapes (uXXXX). Any other use of backslashes is invalid.
+  Token::Value ScanJsonString();
 
-  // Scans the input as a regular expression pattern, previous
-  // character(s) must be /(=). Returns true if a pattern is scanned.
-  bool ScanRegExpPattern(bool seen_equal);
-  // Returns true if regexp flags are scanned (always since flags can
-  // be empty).
-  bool ScanRegExpFlags();
+  // Used to recognizes one of the literals "true", "false", or "null". These
+  // are the only valid JSON identifiers (productions JSONBooleanLiteral,
+  // JSONNullLiteral).
+  Token::Value ScanJsonIdentifier(const char* text, Token::Value token);
 
-  // Seek forward to the given position.  This operation does not
-  // work in general, for instance when there are pushed back
-  // characters, but works for seeking forward until simple delimiter
-  // tokens, which is what it is used for.
-  void SeekForward(int pos);
-
-  Handle<String> SubString(int start_pos, int end_pos);
-  bool stack_overflow() { return stack_overflow_; }
-
-  static StaticResource<Utf8Decoder>* utf8_decoder() { return &utf8_decoder_; }
-
-  // Tells whether the buffer contains an identifier (no escapes).
-  // Used for checking if a property name is an identifier.
-  static bool IsIdentifier(unibrow::CharacterStream* buffer);
-
-  static unibrow::Predicate<IdentifierStart, 128> kIsIdentifierStart;
-  static unibrow::Predicate<IdentifierPart, 128> kIsIdentifierPart;
-  static unibrow::Predicate<unibrow::LineTerminator, 128> kIsLineTerminator;
-  static unibrow::Predicate<unibrow::WhiteSpace, 128> kIsWhiteSpace;
-
-  static const int kCharacterLookaheadBufferSize = 1;
-
- private:
-  CharacterStreamUTF16Buffer char_stream_buffer_;
-  TwoByteStringUTF16Buffer two_byte_string_buffer_;
-
-  // Source.
-  UTF16Buffer* source_;
-  int position_;
-
-  // Buffer to hold literal values (identifiers, strings, numbers)
-  // using 0-terminated UTF-8 encoding.
-  UTF8Buffer literal_buffer_1_;
-  UTF8Buffer literal_buffer_2_;
-
-  bool stack_overflow_;
-  static StaticResource<Utf8Decoder> utf8_decoder_;
-
-  // One Unicode character look-ahead; c0_ < 0 at the end of the input.
-  uc32 c0_;
-
-  // The current and look-ahead token.
-  struct TokenDesc {
-    Token::Value token;
-    Location location;
-    UTF8Buffer* literal_buffer;
-  };
-
-  TokenDesc current_;  // desc for current token (as returned by Next())
-  TokenDesc next_;     // desc for next token (one token look-ahead)
-  bool has_line_terminator_before_next_;
-  bool is_pre_parsing_;
-
-  // Literal buffer support
-  void StartLiteral();
-  void AddChar(uc32 ch);
-  void AddCharAdvance();
-  void TerminateLiteral();
-
-  // Low-level scanning support.
-  void Advance() { c0_ = source_->Advance(); }
-  void PushBack(uc32 ch) {
-    source_->PushBack(ch);
-    c0_ = ch;
-  }
-
-  bool SkipWhiteSpace();
-  Token::Value SkipSingleLineComment();
-  Token::Value SkipMultiLineComment();
-
-  inline Token::Value Select(Token::Value tok);
-  inline Token::Value Select(uc32 next, Token::Value then, Token::Value else_);
-
-  void Scan();
-  void ScanDecimalDigits();
-  Token::Value ScanNumber(bool seen_period);
-  Token::Value ScanIdentifier();
-  uc32 ScanHexEscape(uc32 c, int length);
-  uc32 ScanOctalEscape(uc32 c, int length);
-  void ScanEscape();
-  Token::Value ScanString();
-
-  // Scans a possible HTML comment -- begins with '<!'.
-  Token::Value ScanHtmlComment();
-
-  // Return the current source position.
-  int source_pos() {
-    return source_->pos() - kCharacterLookaheadBufferSize + position_;
-  }
-
-  // Decodes a unicode escape-sequence which is part of an identifier.
-  // If the escape sequence cannot be decoded the result is kBadRune.
-  uc32 ScanIdentifierUnicodeEscape();
+  // Holds the value of a scanned number token.
+  double number_;
 };
 
 } }  // namespace v8::internal

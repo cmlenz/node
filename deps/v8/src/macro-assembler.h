@@ -50,17 +50,15 @@ enum HandlerType {
 };
 
 
-// Flags used for the AllocateInNewSpace functions.
-enum AllocationFlags {
-  // No special flags.
-  NO_ALLOCATION_FLAGS = 0,
-  // Return the pointer to the allocated already tagged as a heap object.
-  TAG_OBJECT = 1 << 0,
-  // The content of the result register already contains the allocation top in
-  // new space.
-  RESULT_CONTAINS_TOP = 1 << 1
+// Types of uncatchable exceptions.
+enum UncatchableExceptionType {
+  OUT_OF_MEMORY,
+  TERMINATION
 };
 
+
+// Invalid depth in prototype chain.
+const int kInvalidProtoDepth = -1;
 
 #if V8_TARGET_ARCH_IA32
 #include "assembler.h"
@@ -81,8 +79,42 @@ enum AllocationFlags {
 #include "arm/assembler-arm-inl.h"
 #include "code.h"  // must be after assembler_*.h
 #include "arm/macro-assembler-arm.h"
+#elif V8_TARGET_ARCH_MIPS
+#include "mips/constants-mips.h"
+#include "assembler.h"
+#include "mips/assembler-mips.h"
+#include "mips/assembler-mips-inl.h"
+#include "code.h"  // must be after assembler_*.h
+#include "mips/macro-assembler-mips.h"
 #else
 #error Unsupported target architecture.
 #endif
+
+namespace v8 {
+namespace internal {
+
+// Support for "structured" code comments.
+#ifdef DEBUG
+
+class Comment {
+ public:
+  Comment(MacroAssembler* masm, const char* msg);
+  ~Comment();
+
+ private:
+  MacroAssembler* masm_;
+  const char* msg_;
+};
+
+#else
+
+class Comment {
+ public:
+  Comment(MacroAssembler*, const char*)  {}
+};
+
+#endif  // DEBUG
+
+} }  // namespace v8::internal
 
 #endif  // V8_MACRO_ASSEMBLER_H_

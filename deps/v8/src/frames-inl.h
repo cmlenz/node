@@ -36,6 +36,8 @@
 #include "x64/frames-x64.h"
 #elif V8_TARGET_ARCH_ARM
 #include "arm/frames-arm.h"
+#elif V8_TARGET_ARCH_MIPS
+#include "mips/frames-mips.h"
 #else
 #error Unsupported target architecture.
 #endif
@@ -62,9 +64,8 @@ inline bool StackHandler::includes(Address address) const {
 }
 
 
-inline void StackHandler::Iterate(ObjectVisitor* v) const {
-  // Stack handlers do not contain any pointers that need to be
-  // traversed.
+inline void StackHandler::Iterate(ObjectVisitor* v, Code* holder) const {
+  StackFrame::IteratePc(v, pc_address(), holder);
 }
 
 
@@ -79,15 +80,9 @@ inline StackHandler::State StackHandler::state() const {
 }
 
 
-inline Address StackHandler::pc() const {
+inline Address* StackHandler::pc_address() const {
   const int offset = StackHandlerConstants::kPCOffset;
-  return Memory::Address_at(address() + offset);
-}
-
-
-inline void StackHandler::set_pc(Address value) {
-  const int offset = StackHandlerConstants::kPCOffset;
-  Memory::Address_at(address() + offset) = value;
+  return reinterpret_cast<Address*>(address() + offset);
 }
 
 
@@ -141,15 +136,26 @@ inline bool StandardFrame::IsConstructFrame(Address fp) {
 }
 
 
+Address JavaScriptFrame::GetParameterSlot(int index) const {
+  int param_count = ComputeParametersCount();
+  ASSERT(-1 <= index && index < param_count);
+  int parameter_offset = (param_count - index - 1) * kPointerSize;
+  return caller_sp() + parameter_offset;
+}
+
+
+Object* JavaScriptFrame::GetParameter(int index) const {
+  return Memory::Object_at(GetParameterSlot(index));
+}
+
+
 inline Object* JavaScriptFrame::receiver() const {
-  const int offset = JavaScriptFrameConstants::kReceiverOffset;
-  return Memory::Object_at(caller_sp() + offset);
+  return GetParameter(-1);
 }
 
 
 inline void JavaScriptFrame::set_receiver(Object* value) {
-  const int offset = JavaScriptFrameConstants::kReceiverOffset;
-  Memory::Object_at(caller_sp() + offset) = value;
+  Memory::Object_at(GetParameterSlot(-1)) = value;
 }
 
 

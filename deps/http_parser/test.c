@@ -1,22 +1,22 @@
-/* Copyright 2009 Ryan Dahl <ry@tinyclouds.org>
- * 
+/* Copyright Joyent, Inc. and other Node contributors. All rights reserved.
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
  * deal in the Software without restriction, including without limitation the
  * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
  * sell copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
  * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE. 
+ * IN THE SOFTWARE.
  */
 #include "http_parser.h"
 #include <stdlib.h>
@@ -31,17 +31,17 @@
 #undef FALSE
 #define FALSE 0
 
-#define MAX_HEADERS 10
+#define MAX_HEADERS 13
 #define MAX_ELEMENT_SIZE 500
 
-enum message_type { REQUEST, RESPONSE };
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 static http_parser *parser;
 
 struct message {
   const char *name; // for debugging purposes
   const char *raw;
-  enum message_type type;
+  enum http_parser_type type;
   enum http_method method;
   int status_code;
   char request_path[MAX_ELEMENT_SIZE];
@@ -49,10 +49,13 @@ struct message {
   char fragment[MAX_ELEMENT_SIZE];
   char query_string[MAX_ELEMENT_SIZE];
   char body[MAX_ELEMENT_SIZE];
+  size_t body_size;
   int num_headers;
   enum { NONE=0, FIELD, VALUE } last_header_element;
   char headers [MAX_HEADERS][2][MAX_ELEMENT_SIZE];
   int should_keep_alive;
+
+  int upgrade;
 
   unsigned short http_major;
   unsigned short http_minor;
@@ -65,15 +68,6 @@ struct message {
 
 static int currently_parsing_eof;
 
-inline size_t parse (enum message_type t, const char *buf, size_t len)
-{
-  size_t nparsed;
-  currently_parsing_eof = (len == 0);
-  nparsed = (t == REQUEST ? http_parse_requests(parser, buf, len) 
-                          : http_parse_responses(parser, buf, len));
-  return nparsed;
-}
-
 static struct message messages[5];
 static int num_messages;
 
@@ -81,14 +75,14 @@ static int num_messages;
 const struct message requests[] =
 #define CURL_GET 0
 { {.name= "curl get"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /test HTTP/1.1\r\n"
          "User-Agent: curl/7.18.0 (i486-pc-linux-gnu) libcurl/7.18.0 OpenSSL/0.9.8g zlib/1.2.3.3 libidn/1.1\r\n"
          "Host: 0.0.0.0=5000\r\n"
          "Accept: */*\r\n"
          "\r\n"
   ,.should_keep_alive= TRUE
-  ,.message_complete_on_eof= FALSE 
+  ,.message_complete_on_eof= FALSE
   ,.http_major= 1
   ,.http_minor= 1
   ,.method= HTTP_GET
@@ -107,7 +101,7 @@ const struct message requests[] =
 
 #define FIREFOX_GET 1
 , {.name= "firefox get"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /favicon.ico HTTP/1.1\r\n"
          "Host: 0.0.0.0=5000\r\n"
          "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9) Gecko/2008061015 Firefox/3.0\r\n"
@@ -119,7 +113,7 @@ const struct message requests[] =
          "Connection: keep-alive\r\n"
          "\r\n"
   ,.should_keep_alive= TRUE
-  ,.message_complete_on_eof= FALSE 
+  ,.message_complete_on_eof= FALSE
   ,.http_major= 1
   ,.http_minor= 1
   ,.method= HTTP_GET
@@ -143,12 +137,12 @@ const struct message requests[] =
 
 #define DUMBFUCK 2
 , {.name= "dumbfuck"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /dumbfuck HTTP/1.1\r\n"
          "aaaaaaaaaaaaa:++++++++++\r\n"
          "\r\n"
   ,.should_keep_alive= TRUE
-  ,.message_complete_on_eof= FALSE 
+  ,.message_complete_on_eof= FALSE
   ,.http_major= 1
   ,.http_minor= 1
   ,.method= HTTP_GET
@@ -165,11 +159,11 @@ const struct message requests[] =
 
 #define FRAGMENT_IN_URI 3
 , {.name= "fragment in url"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /forums/1/topics/2375?page=1#posts-17408 HTTP/1.1\r\n"
          "\r\n"
   ,.should_keep_alive= TRUE
-  ,.message_complete_on_eof= FALSE 
+  ,.message_complete_on_eof= FALSE
   ,.http_major= 1
   ,.http_minor= 1
   ,.method= HTTP_GET
@@ -184,7 +178,7 @@ const struct message requests[] =
 
 #define GET_NO_HEADERS_NO_BODY 4
 , {.name= "get no headers no body"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /get_no_headers_no_body/world HTTP/1.1\r\n"
          "\r\n"
   ,.should_keep_alive= TRUE
@@ -202,7 +196,7 @@ const struct message requests[] =
 
 #define GET_ONE_HEADER_NO_BODY 5
 , {.name= "get one header no body"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /get_one_header_no_body HTTP/1.1\r\n"
          "Accept: */*\r\n"
          "\r\n"
@@ -224,7 +218,7 @@ const struct message requests[] =
 
 #define GET_FUNKY_CONTENT_LENGTH 6
 , {.name= "get funky content length body hello"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /get_funky_content_length_body_hello HTTP/1.0\r\n"
          "conTENT-Length: 5\r\n"
          "\r\n"
@@ -247,7 +241,7 @@ const struct message requests[] =
 
 #define POST_IDENTITY_BODY_WORLD 7
 , {.name= "post identity body world"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "POST /post_identity_body_world?q=search#hey HTTP/1.1\r\n"
          "Accept: */*\r\n"
          "Transfer-Encoding: identity\r\n"
@@ -274,7 +268,7 @@ const struct message requests[] =
 
 #define POST_CHUNKED_ALL_YOUR_BASE 8
 , {.name= "post - chunked body: all your base are belong to us"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "POST /post_chunked_all_your_base HTTP/1.1\r\n"
          "Transfer-Encoding: chunked\r\n"
          "\r\n"
@@ -299,7 +293,7 @@ const struct message requests[] =
 
 #define TWO_CHUNKS_MULT_ZERO_END 9
 , {.name= "two chunks ; triple zero ending"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "POST /two_chunks_mult_zero_end HTTP/1.1\r\n"
          "Transfer-Encoding: chunked\r\n"
          "\r\n"
@@ -325,7 +319,7 @@ const struct message requests[] =
 
 #define CHUNKED_W_TRAILING_HEADERS 10
 , {.name= "chunked with trailing headers. blech."
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "POST /chunked_w_trailing_headers HTTP/1.1\r\n"
          "Transfer-Encoding: chunked\r\n"
          "\r\n"
@@ -355,7 +349,7 @@ const struct message requests[] =
 
 #define CHUNKED_W_BULLSHIT_AFTER_LENGTH 11
 , {.name= "with bullshit after the length"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "POST /chunked_w_bullshit_after_length HTTP/1.1\r\n"
          "Transfer-Encoding: chunked\r\n"
          "\r\n"
@@ -381,7 +375,7 @@ const struct message requests[] =
 
 #define WITH_QUOTES 12
 , {.name= "with quotes"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /with_\"stupid\"_quotes?foo=\"bar\" HTTP/1.1\r\n\r\n"
   ,.should_keep_alive= TRUE
   ,.message_complete_on_eof= FALSE
@@ -404,7 +398,7 @@ const struct message requests[] =
  * Compare with NO_CONTENT_LENGTH_RESPONSE.
  */
 , {.name = "apachebench get"
-  ,.type= REQUEST
+  ,.type= HTTP_REQUEST
   ,.raw= "GET /test HTTP/1.0\r\n"
          "Host: 0.0.0.0:5000\r\n"
          "User-Agent: ApacheBench/2.3\r\n"
@@ -426,6 +420,301 @@ const struct message requests[] =
   ,.body= ""
   }
 
+#define QUERY_URL_WITH_QUESTION_MARK_GET 14
+/* Some clients include '?' characters in query strings.
+ */
+, {.name = "query url with question mark"
+  ,.type= HTTP_REQUEST
+  ,.raw= "GET /test.cgi?foo=bar?baz HTTP/1.1\r\n\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_GET
+  ,.query_string= "foo=bar?baz"
+  ,.fragment= ""
+  ,.request_path= "/test.cgi"
+  ,.request_url= "/test.cgi?foo=bar?baz"
+  ,.num_headers= 0
+  ,.headers= {}
+  ,.body= ""
+  }
+
+#define PREFIX_NEWLINE_GET 15
+/* Some clients, especially after a POST in a keep-alive connection,
+ * will send an extra CRLF before the next request
+ */
+, {.name = "newline prefix get"
+  ,.type= HTTP_REQUEST
+  ,.raw= "\r\nGET /test HTTP/1.1\r\n\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_GET
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= "/test"
+  ,.request_url= "/test"
+  ,.num_headers= 0
+  ,.headers= { }
+  ,.body= ""
+  }
+
+#define UPGRADE_REQUEST 16
+, {.name = "upgrade request"
+  ,.type= HTTP_REQUEST
+  ,.raw= "GET /demo HTTP/1.1\r\n"
+         "Host: example.com\r\n"
+         "Connection: Upgrade\r\n"
+         "Sec-WebSocket-Key2: 12998 5 Y3 1  .P00\r\n"
+         "Sec-WebSocket-Protocol: sample\r\n"
+         "Upgrade: WebSocket\r\n"
+         "Sec-WebSocket-Key1: 4 @1  46546xW%0l 1 5\r\n"
+         "Origin: http://example.com\r\n"
+         "\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_GET
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= "/demo"
+  ,.request_url= "/demo"
+  ,.num_headers= 7
+  ,.upgrade=1
+  ,.headers= { { "Host", "example.com" }
+             , { "Connection", "Upgrade" }
+             , { "Sec-WebSocket-Key2", "12998 5 Y3 1  .P00" }
+             , { "Sec-WebSocket-Protocol", "sample" }
+             , { "Upgrade", "WebSocket" }
+             , { "Sec-WebSocket-Key1", "4 @1  46546xW%0l 1 5" }
+             , { "Origin", "http://example.com" }
+             }
+  ,.body= ""
+  }
+
+#define CONNECT_REQUEST 17
+, {.name = "connect request"
+  ,.type= HTTP_REQUEST
+  ,.raw= "CONNECT 0-home0.netscape.com:443 HTTP/1.0\r\n"
+         "User-agent: Mozilla/1.1N\r\n"
+         "Proxy-authorization: basic aGVsbG86d29ybGQ=\r\n"
+         "\r\n"
+  ,.should_keep_alive= FALSE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 0
+  ,.method= HTTP_CONNECT
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= ""
+  ,.request_url= "0-home0.netscape.com:443"
+  ,.num_headers= 2
+  ,.upgrade=1
+  ,.headers= { { "User-agent", "Mozilla/1.1N" }
+             , { "Proxy-authorization", "basic aGVsbG86d29ybGQ=" }
+             }
+  ,.body= ""
+  }
+
+#define REPORT_REQ 18
+, {.name= "report request"
+  ,.type= HTTP_REQUEST
+  ,.raw= "REPORT /test HTTP/1.1\r\n"
+         "\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_REPORT
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= "/test"
+  ,.request_url= "/test"
+  ,.num_headers= 0
+  ,.headers= {}
+  ,.body= ""
+  }
+
+#define NO_HTTP_VERSION 19
+, {.name= "request with no http version"
+  ,.type= HTTP_REQUEST
+  ,.raw= "GET /\r\n"
+         "\r\n"
+  ,.should_keep_alive= FALSE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 0
+  ,.http_minor= 9
+  ,.method= HTTP_GET
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= "/"
+  ,.request_url= "/"
+  ,.num_headers= 0
+  ,.headers= {}
+  ,.body= ""
+  }
+
+#define MSEARCH_REQ 20
+, {.name= "m-search request"
+  ,.type= HTTP_REQUEST
+  ,.raw= "M-SEARCH * HTTP/1.1\r\n"
+         "HOST: 239.255.255.250:1900\r\n"
+         "MAN: \"ssdp:discover\"\r\n"
+         "ST: \"ssdp:all\"\r\n"
+         "\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_MSEARCH
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= "*"
+  ,.request_url= "*"
+  ,.num_headers= 3
+  ,.headers= { { "HOST", "239.255.255.250:1900" }
+             , { "MAN", "\"ssdp:discover\"" }
+             , { "ST", "\"ssdp:all\"" }
+             }
+  ,.body= ""
+  }
+
+#define QUERY_TERMINATED_HOST 21
+, {.name= "host terminated by a query string"
+  ,.type= HTTP_REQUEST
+  ,.raw= "GET http://hypnotoad.org?hail=all HTTP/1.1\r\n"
+         "\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_GET
+  ,.query_string= "hail=all"
+  ,.fragment= ""
+  ,.request_path= ""
+  ,.request_url= "http://hypnotoad.org?hail=all"
+  ,.num_headers= 0
+  ,.headers= { }
+  ,.body= ""
+  }
+
+#define QUERY_TERMINATED_HOSTPORT 22
+, {.name= "host:port terminated by a query string"
+  ,.type= HTTP_REQUEST
+  ,.raw= "GET http://hypnotoad.org:1234?hail=all HTTP/1.1\r\n"
+         "\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_GET
+  ,.query_string= "hail=all"
+  ,.fragment= ""
+  ,.request_path= ""
+  ,.request_url= "http://hypnotoad.org:1234?hail=all"
+  ,.num_headers= 0
+  ,.headers= { }
+  ,.body= ""
+  }
+
+#define SPACE_TERMINATED_HOSTPORT 23
+, {.name= "host:port terminated by a space"
+  ,.type= HTTP_REQUEST
+  ,.raw= "GET http://hypnotoad.org:1234 HTTP/1.1\r\n"
+         "\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_GET
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= ""
+  ,.request_url= "http://hypnotoad.org:1234"
+  ,.num_headers= 0
+  ,.headers= { }
+  ,.body= ""
+  }
+
+#if !HTTP_PARSER_STRICT
+#define UTF8_PATH_REQ 24
+, {.name= "utf-8 path request"
+  ,.type= HTTP_REQUEST
+  ,.raw= "GET /δ¶/δt/pope?q=1#narf HTTP/1.1\r\n"
+         "Host: github.com\r\n"
+         "\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_GET
+  ,.query_string= "q=1"
+  ,.fragment= "narf"
+  ,.request_path= "/δ¶/δt/pope"
+  ,.request_url= "/δ¶/δt/pope?q=1#narf"
+  ,.num_headers= 1
+  ,.headers= { {"Host", "github.com" }
+             }
+  ,.body= ""
+  }
+
+#define HOSTNAME_UNDERSCORE 25
+, {.name = "hostname underscore"
+  ,.type= HTTP_REQUEST
+  ,.raw= "CONNECT home_0.netscape.com:443 HTTP/1.0\r\n"
+         "User-agent: Mozilla/1.1N\r\n"
+         "Proxy-authorization: basic aGVsbG86d29ybGQ=\r\n"
+         "\r\n"
+  ,.should_keep_alive= FALSE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 0
+  ,.method= HTTP_CONNECT
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= ""
+  ,.request_url= "home_0.netscape.com:443"
+  ,.num_headers= 2
+  ,.upgrade=1
+  ,.headers= { { "User-agent", "Mozilla/1.1N" }
+             , { "Proxy-authorization", "basic aGVsbG86d29ybGQ=" }
+             }
+  ,.body= ""
+  }
+#endif  /* !HTTP_PARSER_STRICT */
+
+#define PATCH_REQ 26
+, {.name = "PATCH request"
+  ,.type= HTTP_REQUEST
+  ,.raw= "PATCH /file.txt HTTP/1.1\r\n"
+         "Host: www.example.com\r\n"
+         "Content-Type: application/example\r\n"
+         "If-Match: \"e0023aa4e\"\r\n"
+         "Content-Length: 10\r\n"
+         "\r\n"
+         "cccccccccc"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.method= HTTP_PATCH
+  ,.query_string= ""
+  ,.fragment= ""
+  ,.request_path= "/file.txt"
+  ,.request_url= "/file.txt"
+  ,.num_headers= 4
+  ,.upgrade=0
+  ,.headers= { { "Host", "www.example.com" }
+             , { "Content-Type", "application/example" }
+             , { "If-Match", "\"e0023aa4e\"" }
+             , { "Content-Length", "10" }
+             }
+  ,.body= "cccccccccc"
+  }
+
 , {.name= NULL } /* sentinel */
 };
 
@@ -433,15 +722,16 @@ const struct message requests[] =
 const struct message responses[] =
 #define GOOGLE_301 0
 { {.name= "google 301"
-  ,.type= RESPONSE
+  ,.type= HTTP_RESPONSE
   ,.raw= "HTTP/1.1 301 Moved Permanently\r\n"
          "Location: http://www.google.com/\r\n"
          "Content-Type: text/html; charset=UTF-8\r\n"
          "Date: Sun, 26 Apr 2009 11:11:49 GMT\r\n"
          "Expires: Tue, 26 May 2009 11:11:49 GMT\r\n"
+         "X-$PrototypeBI-Version: 1.6.0.3\r\n" /* $ char in header field */
          "Cache-Control: public, max-age=2592000\r\n"
          "Server: gws\r\n"
-         "Content-Length: 219\r\n"
+         "Content-Length:  219  \r\n"
          "\r\n"
          "<HTML><HEAD><meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n"
          "<TITLE>301 Moved</TITLE></HEAD><BODY>\n"
@@ -454,15 +744,16 @@ const struct message responses[] =
   ,.http_major= 1
   ,.http_minor= 1
   ,.status_code= 301
-  ,.num_headers= 7
+  ,.num_headers= 8
   ,.headers=
     { { "Location", "http://www.google.com/" }
     , { "Content-Type", "text/html; charset=UTF-8" }
     , { "Date", "Sun, 26 Apr 2009 11:11:49 GMT" }
     , { "Expires", "Tue, 26 May 2009 11:11:49 GMT" }
+    , { "X-$PrototypeBI-Version", "1.6.0.3" }
     , { "Cache-Control", "public, max-age=2592000" }
     , { "Server", "gws" }
-    , { "Content-Length", "219" }
+    , { "Content-Length", "219  " }
     }
   ,.body= "<HTML><HEAD><meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n"
           "<TITLE>301 Moved</TITLE></HEAD><BODY>\n"
@@ -479,7 +770,7 @@ const struct message responses[] =
  * Compare with APACHEBENCH_GET
  */
 , {.name= "no content-length response"
-  ,.type= RESPONSE
+  ,.type= HTTP_RESPONSE
   ,.raw= "HTTP/1.1 200 OK\r\n"
          "Date: Tue, 04 Aug 2009 07:59:32 GMT\r\n"
          "Server: Apache\r\n"
@@ -522,7 +813,7 @@ const struct message responses[] =
 
 #define NO_HEADERS_NO_BODY_404 2
 , {.name= "404 no headers no body"
-  ,.type= RESPONSE
+  ,.type= HTTP_RESPONSE
   ,.raw= "HTTP/1.1 404 Not Found\r\n\r\n"
   ,.should_keep_alive= TRUE
   ,.message_complete_on_eof= FALSE
@@ -531,12 +822,13 @@ const struct message responses[] =
   ,.status_code= 404
   ,.num_headers= 0
   ,.headers= {}
+  ,.body_size= 0
   ,.body= ""
   }
 
 #define NO_REASON_PHRASE 3
 , {.name= "301 no response phrase"
-  ,.type= RESPONSE
+  ,.type= HTTP_RESPONSE
   ,.raw= "HTTP/1.1 301\r\n\r\n"
   ,.should_keep_alive = TRUE
   ,.message_complete_on_eof= FALSE
@@ -550,7 +842,7 @@ const struct message responses[] =
 
 #define TRAILING_SPACE_ON_CHUNKED_BODY 4
 , {.name="200 trailing space on chunked body"
-  ,.type= RESPONSE
+  ,.type= HTTP_RESPONSE
   ,.raw= "HTTP/1.1 200 OK\r\n"
          "Content-Type: text/plain\r\n"
          "Transfer-Encoding: chunked\r\n"
@@ -573,11 +865,217 @@ const struct message responses[] =
     { {"Content-Type", "text/plain" }
     , {"Transfer-Encoding", "chunked" }
     }
+  ,.body_size = 37+28
   ,.body =
          "This is the data in the first chunk\r\n"
          "and this is the second one\r\n"
 
   }
+
+#define NO_CARRIAGE_RET 5
+, {.name="no carriage ret"
+  ,.type= HTTP_RESPONSE
+  ,.raw= "HTTP/1.1 200 OK\n"
+         "Content-Type: text/html; charset=utf-8\n"
+         "Connection: close\n"
+         "\n"
+         "these headers are from http://news.ycombinator.com/"
+  ,.should_keep_alive= FALSE
+  ,.message_complete_on_eof= TRUE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.status_code= 200
+  ,.num_headers= 2
+  ,.headers=
+    { {"Content-Type", "text/html; charset=utf-8" }
+    , {"Connection", "close" }
+    }
+  ,.body= "these headers are from http://news.ycombinator.com/"
+  }
+
+#define PROXY_CONNECTION 6
+, {.name="proxy connection"
+  ,.type= HTTP_RESPONSE
+  ,.raw= "HTTP/1.1 200 OK\r\n"
+         "Content-Type: text/html; charset=UTF-8\r\n"
+         "Content-Length: 11\r\n"
+         "Proxy-Connection: close\r\n"
+         "Date: Thu, 31 Dec 2009 20:55:48 +0000\r\n"
+         "\r\n"
+         "hello world"
+  ,.should_keep_alive= FALSE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.status_code= 200
+  ,.num_headers= 4
+  ,.headers=
+    { {"Content-Type", "text/html; charset=UTF-8" }
+    , {"Content-Length", "11" }
+    , {"Proxy-Connection", "close" }
+    , {"Date", "Thu, 31 Dec 2009 20:55:48 +0000"}
+    }
+  ,.body= "hello world"
+  }
+
+#define UNDERSTORE_HEADER_KEY 7
+  // shown by
+  // curl -o /dev/null -v "http://ad.doubleclick.net/pfadx/DARTSHELLCONFIGXML;dcmt=text/xml;"
+, {.name="underscore header key"
+  ,.type= HTTP_RESPONSE
+  ,.raw= "HTTP/1.1 200 OK\r\n"
+         "Server: DCLK-AdSvr\r\n"
+         "Content-Type: text/xml\r\n"
+         "Content-Length: 0\r\n"
+         "DCLK_imp: v7;x;114750856;0-0;0;17820020;0/0;21603567/21621457/1;;~okv=;dcmt=text/xml;;~cs=o\r\n\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.status_code= 200
+  ,.num_headers= 4
+  ,.headers=
+    { {"Server", "DCLK-AdSvr" }
+    , {"Content-Type", "text/xml" }
+    , {"Content-Length", "0" }
+    , {"DCLK_imp", "v7;x;114750856;0-0;0;17820020;0/0;21603567/21621457/1;;~okv=;dcmt=text/xml;;~cs=o" }
+    }
+  ,.body= ""
+  }
+
+#define BONJOUR_MADAME_FR 8
+/* The client should not merge two headers fields when the first one doesn't
+ * have a value.
+ */
+, {.name= "bonjourmadame.fr"
+  ,.type= HTTP_RESPONSE
+  ,.raw= "HTTP/1.0 301 Moved Permanently\r\n"
+         "Date: Thu, 03 Jun 2010 09:56:32 GMT\r\n"
+         "Server: Apache/2.2.3 (Red Hat)\r\n"
+         "Cache-Control: public\r\n"
+         "Pragma: \r\n"
+         "Location: http://www.bonjourmadame.fr/\r\n"
+         "Vary: Accept-Encoding\r\n"
+         "Content-Length: 0\r\n"
+         "Content-Type: text/html; charset=UTF-8\r\n"
+         "Connection: keep-alive\r\n"
+         "\r\n"
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 0
+  ,.status_code= 301
+  ,.num_headers= 9
+  ,.headers=
+    { { "Date", "Thu, 03 Jun 2010 09:56:32 GMT" }
+    , { "Server", "Apache/2.2.3 (Red Hat)" }
+    , { "Cache-Control", "public" }
+    , { "Pragma", "" }
+    , { "Location", "http://www.bonjourmadame.fr/" }
+    , { "Vary",  "Accept-Encoding" }
+    , { "Content-Length", "0" }
+    , { "Content-Type", "text/html; charset=UTF-8" }
+    , { "Connection", "keep-alive" }
+    }
+  ,.body= ""
+  }
+
+#define SPACE_IN_FIELD_RES 9
+/* Should handle spaces in header fields */
+, {.name= "field space"
+  ,.type= HTTP_RESPONSE
+  ,.raw= "HTTP/1.1 200 OK\r\n"
+         "Server: Microsoft-IIS/6.0\r\n"
+         "X-Powered-By: ASP.NET\r\n"
+         "en-US Content-Type: text/xml\r\n" /* this is the problem */
+         "Content-Type: text/xml\r\n"
+         "Content-Length: 16\r\n"
+         "Date: Fri, 23 Jul 2010 18:45:38 GMT\r\n"
+         "Connection: keep-alive\r\n"
+         "\r\n"
+         "<xml>hello</xml>" /* fake body */
+  ,.should_keep_alive= TRUE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.status_code= 200
+  ,.num_headers= 7
+  ,.headers=
+    { { "Server",  "Microsoft-IIS/6.0" }
+    , { "X-Powered-By", "ASP.NET" }
+    , { "en-US Content-Type", "text/xml" }
+    , { "Content-Type", "text/xml" }
+    , { "Content-Length", "16" }
+    , { "Date", "Fri, 23 Jul 2010 18:45:38 GMT" }
+    , { "Connection", "keep-alive" }
+    }
+  ,.body= "<xml>hello</xml>"
+  }
+
+
+#define RES_FIELD_UNDERSCORE 10
+/* Should handle spaces in header fields */
+, {.name= "field underscore"
+  ,.type= HTTP_RESPONSE
+  ,.raw= "HTTP/1.1 200 OK\r\n"
+         "Date: Tue, 28 Sep 2010 01:14:13 GMT\r\n"
+         "Server: Apache\r\n"
+         "Cache-Control: no-cache, must-revalidate\r\n"
+         "Expires: Mon, 26 Jul 1997 05:00:00 GMT\r\n"
+         ".et-Cookie: PlaxoCS=1274804622353690521; path=/; domain=.plaxo.com\r\n"
+         "Vary: Accept-Encoding\r\n"
+         "_eep-Alive: timeout=45\r\n" /* semantic value ignored */
+         "_onnection: Keep-Alive\r\n" /* semantic value ignored */
+         "Transfer-Encoding: chunked\r\n"
+         "Content-Type: text/html\r\n"
+         "Connection: close\r\n"
+         "\r\n"
+         "0\r\n\r\n"
+  ,.should_keep_alive= FALSE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.status_code= 200
+  ,.num_headers= 11
+  ,.headers=
+    { { "Date", "Tue, 28 Sep 2010 01:14:13 GMT" }
+    , { "Server", "Apache" }
+    , { "Cache-Control", "no-cache, must-revalidate" }
+    , { "Expires", "Mon, 26 Jul 1997 05:00:00 GMT" }
+    , { ".et-Cookie", "PlaxoCS=1274804622353690521; path=/; domain=.plaxo.com" }
+    , { "Vary", "Accept-Encoding" }
+    , { "_eep-Alive", "timeout=45" }
+    , { "_onnection", "Keep-Alive" }
+    , { "Transfer-Encoding", "chunked" }
+    , { "Content-Type", "text/html" }
+    , { "Connection", "close" }
+    }
+  ,.body= ""
+  }
+
+#define NON_ASCII_IN_STATUS_LINE 11
+/* Should handle non-ASCII in status line */
+, {.name= "non-ASCII in status line"
+  ,.type= HTTP_RESPONSE
+  ,.raw= "HTTP/1.1 500 Oriëntatieprobleem\r\n"
+         "Date: Fri, 5 Nov 2010 23:07:12 GMT+2\r\n"
+         "Content-Length: 0\r\n"
+         "Connection: close\r\n"
+         "\r\n"
+  ,.should_keep_alive= FALSE
+  ,.message_complete_on_eof= FALSE
+  ,.http_major= 1
+  ,.http_minor= 1
+  ,.status_code= 500
+  ,.num_headers= 3
+  ,.headers=
+    { { "Date", "Fri, 5 Nov 2010 23:07:12 GMT+2" }
+    , { "Content-Length", "0" }
+    , { "Connection", "close" }
+    }
+  ,.body= ""
+  }
+
 
 , {.name= NULL } /* sentinel */
 };
@@ -648,7 +1146,17 @@ body_cb (http_parser *p, const char *buf, size_t len)
 {
   assert(p == parser);
   strncat(messages[num_messages].body, buf, len);
+  messages[num_messages].body_size += len;
  // printf("body_cb: '%s'\n", requests[num_messages].body);
+  return 0;
+}
+
+int
+count_body_cb (http_parser *p, const char *buf, size_t len)
+{
+  assert(p == parser);
+  assert(buf);
+  messages[num_messages].body_size += len;
   return 0;
 }
 
@@ -688,13 +1196,52 @@ message_complete_cb (http_parser *p)
   messages[num_messages].message_complete_cb_called = TRUE;
 
   messages[num_messages].message_complete_on_eof = currently_parsing_eof;
-  
+
   num_messages++;
   return 0;
 }
 
+static http_parser_settings settings =
+  {.on_message_begin = message_begin_cb
+  ,.on_header_field = header_field_cb
+  ,.on_header_value = header_value_cb
+  ,.on_path = request_path_cb
+  ,.on_url = request_url_cb
+  ,.on_fragment = fragment_cb
+  ,.on_query_string = query_string_cb
+  ,.on_body = body_cb
+  ,.on_headers_complete = headers_complete_cb
+  ,.on_message_complete = message_complete_cb
+  };
+
+static http_parser_settings settings_count_body =
+  {.on_message_begin = message_begin_cb
+  ,.on_header_field = header_field_cb
+  ,.on_header_value = header_value_cb
+  ,.on_path = request_path_cb
+  ,.on_url = request_url_cb
+  ,.on_fragment = fragment_cb
+  ,.on_query_string = query_string_cb
+  ,.on_body = count_body_cb
+  ,.on_headers_complete = headers_complete_cb
+  ,.on_message_complete = message_complete_cb
+  };
+
+static http_parser_settings settings_null =
+  {.on_message_begin = 0
+  ,.on_header_field = 0
+  ,.on_header_value = 0
+  ,.on_path = 0
+  ,.on_url = 0
+  ,.on_fragment = 0
+  ,.on_query_string = 0
+  ,.on_body = 0
+  ,.on_headers_complete = 0
+  ,.on_message_complete = 0
+  };
+
 void
-parser_init ()
+parser_init (enum http_parser_type type)
 {
   num_messages = 0;
 
@@ -702,20 +1249,10 @@ parser_init ()
 
   parser = malloc(sizeof(http_parser));
 
-  http_parser_init(parser);
+  http_parser_init(parser, type);
 
   memset(&messages, 0, sizeof messages);
 
-  parser->on_message_begin     = message_begin_cb;
-  parser->on_header_field      = header_field_cb;
-  parser->on_header_value      = header_value_cb;
-  parser->on_path              = request_path_cb;
-  parser->on_url               = request_url_cb;
-  parser->on_fragment          = fragment_cb;
-  parser->on_query_string      = query_string_cb;
-  parser->on_body              = body_cb;
-  parser->on_headers_complete  = headers_complete_cb;
-  parser->on_message_complete  = message_complete_cb;
 }
 
 void
@@ -724,6 +1261,22 @@ parser_free ()
   assert(parser);
   free(parser);
   parser = NULL;
+}
+
+size_t parse (const char *buf, size_t len)
+{
+  size_t nparsed;
+  currently_parsing_eof = (len == 0);
+  nparsed = http_parser_execute(parser, &settings, buf, len);
+  return nparsed;
+}
+
+size_t parse_count_body (const char *buf, size_t len)
+{
+  size_t nparsed;
+  currently_parsing_eof = (len == 0);
+  nparsed = http_parser_execute(parser, &settings_count_body, buf, len);
+  return nparsed;
 }
 
 static inline int
@@ -770,7 +1323,7 @@ message_eq (int index, const struct message *expected)
   MESSAGE_CHECK_NUM_EQ(expected, m, http_major);
   MESSAGE_CHECK_NUM_EQ(expected, m, http_minor);
 
-  if (expected->type == REQUEST) {
+  if (expected->type == HTTP_REQUEST) {
     MESSAGE_CHECK_NUM_EQ(expected, m, method);
   } else {
     MESSAGE_CHECK_NUM_EQ(expected, m, status_code);
@@ -788,7 +1341,11 @@ message_eq (int index, const struct message *expected)
   MESSAGE_CHECK_STR_EQ(expected, m, query_string);
   MESSAGE_CHECK_STR_EQ(expected, m, fragment);
   MESSAGE_CHECK_STR_EQ(expected, m, request_url);
-  MESSAGE_CHECK_STR_EQ(expected, m, body);
+  if (expected->body_size) {
+    MESSAGE_CHECK_NUM_EQ(expected, m, body_size);
+  } else {
+    MESSAGE_CHECK_STR_EQ(expected, m, body);
+  }
 
   MESSAGE_CHECK_NUM_EQ(expected, m, num_headers);
 
@@ -807,7 +1364,7 @@ static void
 print_error (const char *raw, size_t error_location)
 {
   fprintf(stderr, "\n*** parse error ***\n\n");
-  
+
   int this_line = 0, char_len = 0;
   size_t i, j, len = strlen(raw), error_location_line = 0;
   for (i = 0; i < len; i++) {
@@ -841,24 +1398,87 @@ print_error (const char *raw, size_t error_location)
   for (j = 0; j < error_location_line; j++) {
     fputc(' ', stderr);
   }
-  fprintf(stderr, "^\n\nerror location: %d\n", error_location);
+  fprintf(stderr, "^\n\nerror location: %u\n", (unsigned int)error_location);
 }
 
 
 void
 test_message (const struct message *message)
 {
-  parser_init();
+  size_t raw_len = strlen(message->raw);
+  size_t msg1len;
+  for (msg1len = 0; msg1len < raw_len; msg1len++) {
+    parser_init(message->type);
+
+    size_t read;
+    const char *msg1 = message->raw;
+    const char *msg2 = msg1 + msg1len;
+    size_t msg2len = raw_len - msg1len;
+
+    if (msg1len) {
+      read = parse(msg1, msg1len);
+
+      if (message->upgrade && parser->upgrade) goto test;
+
+      if (read != msg1len) {
+        print_error(msg1, read);
+        exit(1);
+      }
+    }
+
+
+    read = parse(msg2, msg2len);
+
+    if (message->upgrade && parser->upgrade) goto test;
+
+    if (read != msg2len) {
+      print_error(msg2, read);
+      exit(1);
+    }
+
+    read = parse(NULL, 0);
+
+    if (message->upgrade && parser->upgrade) goto test;
+
+    if (read != 0) {
+      print_error(message->raw, read);
+      exit(1);
+    }
+
+  test:
+
+    if (num_messages != 1) {
+      printf("\n*** num_messages != 1 after testing '%s' ***\n\n", message->name);
+      exit(1);
+    }
+
+    if(!message_eq(0, message)) exit(1);
+
+    parser_free();
+  }
+}
+
+void
+test_message_count_body (const struct message *message)
+{
+  parser_init(message->type);
 
   size_t read;
+  size_t l = strlen(message->raw);
+  size_t i, toread;
+  size_t chunk = 4024;
 
-  read = parse(message->type, message->raw, strlen(message->raw));
-  if (read != strlen(message->raw)) {
-    print_error(message->raw, read);
-    exit(1);
+  for (i = 0; i < l; i+= chunk) {
+    toread = MIN(l-i, chunk);
+    read = parse_count_body(message->raw + i, toread);
+    if (read != toread) {
+      print_error(message->raw, read);
+      exit(1);
+    }
   }
 
-  read = parse(message->type, NULL, 0);
+
+  read = parse_count_body(NULL, 0);
   if (read != 0) {
     print_error(message->raw, read);
     exit(1);
@@ -875,28 +1495,92 @@ test_message (const struct message *message)
 }
 
 void
-test_error (const char *buf)
+test_simple (const char *buf, int should_pass)
 {
-  parser_init();
+  parser_init(HTTP_REQUEST);
 
   size_t parsed;
+  int pass;
+  parsed = parse(buf, strlen(buf));
+  pass = (parsed == strlen(buf));
+  parsed = parse(NULL, 0);
+  pass &= (parsed == 0);
 
-  parsed = parse(REQUEST, buf, strlen(buf));
-  if (parsed != strlen(buf)) goto out;
-  parsed = parse(REQUEST, NULL, 0);
-  if (parsed != 0) goto out;
+  parser_free();
 
-  fprintf(stderr, "\n*** Error expected but none found ***\n\n%s", buf);
+  if (pass != should_pass) {
+    fprintf(stderr, "\n*** test_simple expected %s ***\n\n%s", should_pass ? "success" : "error", buf);
+    exit(1);
+  }
+}
+
+void
+test_header_overflow_error (int req)
+{
+  http_parser parser;
+  http_parser_init(&parser, req ? HTTP_REQUEST : HTTP_RESPONSE);
+  size_t parsed;
+  const char *buf;
+  buf = req ? "GET / HTTP/1.1\r\n" : "HTTP/1.0 200 OK\r\n";
+  parsed = http_parser_execute(&parser, &settings_null, buf, strlen(buf));
+  assert(parsed == strlen(buf));
+
+  buf = "header-key: header-value\r\n";
+  int i;
+  for (i = 0; i < 10000; i++) {
+    if (http_parser_execute(&parser, &settings_null, buf, strlen(buf)) != strlen(buf)) {
+      //fprintf(stderr, "error found on iter %d\n", i);
+      return;
+    }
+  }
+
+  fprintf(stderr, "\n*** Error expected but none in header overflow test ***\n");
   exit(1);
+}
+
+void
+test_no_overflow_long_body (int req, size_t length)
+{
+  http_parser parser;
+  http_parser_init(&parser, req ? HTTP_REQUEST : HTTP_RESPONSE);
+  size_t parsed;
+  size_t i;
+  char buf1[3000];
+  size_t buf1len = sprintf(buf1, "%s\r\nConnection: Keep-Alive\r\nContent-Length: %zu\r\n\r\n",
+      req ? "POST / HTTP/1.0" : "HTTP/1.0 200 OK", length);
+  parsed = http_parser_execute(&parser, &settings_null, buf1, buf1len);
+  if (parsed != buf1len)
+    goto err;
+
+  for (i = 0; i < length; i++) {
+    char foo = 'a';
+    parsed = http_parser_execute(&parser, &settings_null, &foo, 1);
+    if (parsed != 1)
+      goto err;
+  }
+
+  parsed = http_parser_execute(&parser, &settings_null, buf1, buf1len);
+  if (parsed != buf1len) goto err;
   return;
 
-out:
-  parser_free();
+ err:
+  fprintf(stderr,
+          "\n*** error in test_no_overflow_long_body %s of length %zu ***\n",
+          req ? "REQUEST" : "RESPONSE",
+          length);
+  exit(1);
 }
 
 void
 test_multiple3 (const struct message *r1, const struct message *r2, const struct message *r3)
 {
+  int message_count = 1;
+  if (!r1->upgrade) {
+    message_count++;
+    if (!r2->upgrade) message_count++;
+  }
+  int has_upgrade = (message_count < 3 || r3->upgrade);
+
   char total[ strlen(r1->raw)
             + strlen(r2->raw)
             + strlen(r3->raw)
@@ -908,30 +1592,42 @@ test_multiple3 (const struct message *r1, const struct message *r2, const struct
   strcat(total, r2->raw);
   strcat(total, r3->raw);
 
-  parser_init();
+  parser_init(r1->type);
 
   size_t read;
 
-  read = parse(r1->type, total, strlen(total));
+  read = parse(total, strlen(total));
+
+  if (has_upgrade && parser->upgrade) goto test;
+
   if (read != strlen(total)) {
     print_error(total, read);
     exit(1);
   }
 
-  read = parse(REQUEST, NULL, 0);
+  read = parse(NULL, 0);
+
+  if (has_upgrade && parser->upgrade) goto test;
+
   if (read != 0) {
     print_error(total, read);
     exit(1);
   }
 
-  if (3 != num_messages) {
+test:
+
+  if (message_count != num_messages) {
     fprintf(stderr, "\n\n*** Parser didn't see 3 messages only %d *** \n", num_messages);
     exit(1);
   }
 
   if (!message_eq(0, r1)) exit(1);
-  if (!message_eq(1, r2)) exit(1);
-  if (!message_eq(2, r3)) exit(1);
+  if (message_count > 1) {
+    if (!message_eq(1, r2)) exit(1);
+    if (message_count > 2) {
+      if (!message_eq(2, r3)) exit(1);
+    }
+  }
 
   parser_free();
 }
@@ -956,88 +1652,133 @@ test_scan (const struct message *r1, const struct message *r2, const struct mess
 
   int total_len = strlen(total);
 
-  int total_ops = (total_len - 1) * (total_len - 2) / 2;
+  int total_ops = 2 * (total_len - 1) * (total_len - 2) / 2;
   int ops = 0 ;
 
   size_t buf1_len, buf2_len, buf3_len;
 
-  int i,j;
-  for (j = 2; j < total_len; j ++ ) {
-    for (i = 1; i < j; i ++ ) {
+  int i,j,type_both;
+  for (type_both = 0; type_both < 2; type_both ++ ) {
+    for (j = 2; j < total_len; j ++ ) {
+      for (i = 1; i < j; i ++ ) {
 
-      if (ops % 1000 == 0)  {
-        printf("\b\b\b\b%3.0f%%", 100 * (float)ops /(float)total_ops);
-        fflush(stdout);
+        if (ops % 1000 == 0)  {
+          printf("\b\b\b\b%3.0f%%", 100 * (float)ops /(float)total_ops);
+          fflush(stdout);
+        }
+        ops += 1;
+
+        parser_init(type_both ? HTTP_BOTH : r1->type);
+
+        buf1_len = i;
+        strncpy(buf1, total, buf1_len);
+        buf1[buf1_len] = 0;
+
+        buf2_len = j - i;
+        strncpy(buf2, total+i, buf2_len);
+        buf2[buf2_len] = 0;
+
+        buf3_len = total_len - j;
+        strncpy(buf3, total+j, buf3_len);
+        buf3[buf3_len] = 0;
+
+        read = parse(buf1, buf1_len);
+
+        if (r3->upgrade && parser->upgrade) goto test;
+
+        if (read != buf1_len) {
+          print_error(buf1, read);
+          goto error;
+        }
+
+        read = parse(buf2, buf2_len);
+
+        if (r3->upgrade && parser->upgrade) goto test;
+
+        if (read != buf2_len) {
+          print_error(buf2, read);
+          goto error;
+        }
+
+        read = parse(buf3, buf3_len);
+
+        if (r3->upgrade && parser->upgrade) goto test;
+
+        if (read != buf3_len) {
+          print_error(buf3, read);
+          goto error;
+        }
+
+        parse(NULL, 0);
+
+test:
+
+        if (3 != num_messages) {
+          fprintf(stderr, "\n\nParser didn't see 3 messages only %d\n", num_messages);
+          goto error;
+        }
+
+        if (!message_eq(0, r1)) {
+          fprintf(stderr, "\n\nError matching messages[0] in test_scan.\n");
+          goto error;
+        }
+
+        if (!message_eq(1, r2)) {
+          fprintf(stderr, "\n\nError matching messages[1] in test_scan.\n");
+          goto error;
+        }
+
+        if (!message_eq(2, r3)) {
+          fprintf(stderr, "\n\nError matching messages[2] in test_scan.\n");
+          goto error;
+        }
+
+        parser_free();
       }
-      ops += 1;
-
-      parser_init();
-
-      buf1_len = i;
-      strncpy(buf1, total, buf1_len);
-      buf1[buf1_len] = 0;
-
-      buf2_len = j - i;
-      strncpy(buf2, total+i, buf2_len);
-      buf2[buf2_len] = 0;
-
-      buf3_len = total_len - j;
-      strncpy(buf3, total+j, buf3_len);
-      buf3[buf3_len] = 0;
-
-      read = parse(r1->type, buf1, buf1_len);
-      if (read != buf1_len) {
-        print_error(buf1, read);
-        goto error;
-      }
-
-      read = parse(r1->type, buf2, buf2_len);
-      if (read != buf2_len) {
-        print_error(buf2, read);
-        goto error;
-      }
-
-      read = parse(r1->type, buf3, buf3_len);
-      if (read != buf3_len) {
-        print_error(buf3, read);
-        goto error;
-      }
-
-      parse(r1->type, NULL, 0);
-
-      if (3 != num_messages) {
-        fprintf(stderr, "\n\nParser didn't see 3 messages only %d\n", num_messages);
-        goto error;
-      }
-
-      if (!message_eq(0, r1)) {
-        fprintf(stderr, "\n\nError matching messages[0] in test_scan.\n");
-        goto error;
-      }
-
-      if (!message_eq(1, r2)) {
-        fprintf(stderr, "\n\nError matching messages[1] in test_scan.\n");
-        goto error;
-      }
-
-      if (!message_eq(2, r3)) {
-        fprintf(stderr, "\n\nError matching messages[2] in test_scan.\n");
-        goto error;
-      }
-
-      parser_free();
     }
   }
   puts("\b\b\b\b100%");
   return;
 
-error:
+ error:
   fprintf(stderr, "i=%d  j=%d\n", i, j);
-  fprintf(stderr, "buf1 (%d) %s\n\n", buf1_len, buf1);
-  fprintf(stderr, "buf2 (%d) %s\n\n", buf2_len , buf2);
-  fprintf(stderr, "buf3 (%d) %s\n", buf3_len, buf3);
+  fprintf(stderr, "buf1 (%u) %s\n\n", (unsigned int)buf1_len, buf1);
+  fprintf(stderr, "buf2 (%u) %s\n\n", (unsigned int)buf2_len , buf2);
+  fprintf(stderr, "buf3 (%u) %s\n", (unsigned int)buf3_len, buf3);
   exit(1);
 }
+
+// user required to free the result
+// string terminated by \0
+char *
+create_large_chunked_message (int body_size_in_kb, const char* headers)
+{
+  int i;
+  size_t wrote = 0;
+  size_t headers_len = strlen(headers);
+  size_t bufsize = headers_len + (5+1024+2)*body_size_in_kb + 6;
+  char * buf = malloc(bufsize);
+
+  memcpy(buf, headers, headers_len);
+  wrote += headers_len;
+
+  for (i = 0; i < body_size_in_kb; i++) {
+    // write 1kb chunk into the body.
+    memcpy(buf + wrote, "400\r\n", 5);
+    wrote += 5;
+    memset(buf + wrote, 'C', 1024);
+    wrote += 1024;
+    strcpy(buf + wrote, "\r\n");
+    wrote += 2;
+  }
+
+  memcpy(buf + wrote, "0\r\n\r\n", 6);
+  wrote += 6;
+  assert(wrote == bufsize);
+
+  return buf;
+}
+
 
 int
 main (void)
@@ -1047,13 +1788,20 @@ main (void)
   int request_count;
   int response_count;
 
-  printf("sizeof(http_parser) = %d\n", sizeof(http_parser));
-
-  assert(strcmp(http_method_str(HTTP_GET), "GET") == 0);
-  assert(strcmp(http_method_str(HTTP_CONNECT), "CONNECT") == 0);
+  printf("sizeof(http_parser) = %u\n", (unsigned int)sizeof(http_parser));
 
   for (request_count = 0; requests[request_count].name; request_count++);
   for (response_count = 0; responses[response_count].name; response_count++);
+
+  //// OVERFLOW CONDITIONS
+
+  test_header_overflow_error(HTTP_REQUEST);
+  test_no_overflow_long_body(HTTP_REQUEST, 1000);
+  test_no_overflow_long_body(HTTP_REQUEST, 100000);
+
+  test_header_overflow_error(HTTP_RESPONSE);
+  test_no_overflow_long_body(HTTP_RESPONSE, 1000);
+  test_no_overflow_long_body(HTTP_RESPONSE, 100000);
 
   //// RESPONSES
 
@@ -1071,10 +1819,48 @@ main (void)
     }
   }
 
-  printf("response scan 1/1      ");
+  test_message_count_body(&responses[NO_HEADERS_NO_BODY_404]);
+  test_message_count_body(&responses[TRAILING_SPACE_ON_CHUNKED_BODY]);
+
+  // test very large chunked response
+  {
+    char * msg = create_large_chunked_message(31337,
+      "HTTP/1.0 200 OK\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Content-Type: text/plain\r\n"
+      "\r\n");
+    struct message large_chunked =
+      {.name= "large chunked"
+      ,.type= HTTP_RESPONSE
+      ,.raw= msg
+      ,.should_keep_alive= FALSE
+      ,.message_complete_on_eof= FALSE
+      ,.http_major= 1
+      ,.http_minor= 0
+      ,.status_code= 200
+      ,.num_headers= 2
+      ,.headers=
+        { { "Transfer-Encoding", "chunked" }
+        , { "Content-Type", "text/plain" }
+        }
+      ,.body_size= 31337*1024
+      };
+    test_message_count_body(&large_chunked);
+    free(msg);
+  }
+
+
+
+  printf("response scan 1/2      ");
   test_scan( &responses[TRAILING_SPACE_ON_CHUNKED_BODY]
            , &responses[NO_HEADERS_NO_BODY_404]
            , &responses[NO_REASON_PHRASE]
+           );
+
+  printf("response scan 2/2      ");
+  test_scan( &responses[BONJOUR_MADAME_FR]
+           , &responses[UNDERSTORE_HEADER_KEY]
+           , &responses[NO_CARRIAGE_RET]
            );
 
   puts("responses okay");
@@ -1082,9 +1868,45 @@ main (void)
 
   /// REQUESTS
 
+  test_simple("hello world", 0);
+  test_simple("GET / HTP/1.1\r\n\r\n", 0);
 
-  test_error("hello world");
-  test_error("GET / HTP/1.1\r\n\r\n");
+
+  test_simple("ASDF / HTTP/1.1\r\n\r\n", 0);
+  test_simple("PROPPATCHA / HTTP/1.1\r\n\r\n", 0);
+  test_simple("GETA / HTTP/1.1\r\n\r\n", 0);
+
+  // Well-formed but incomplete
+  test_simple("GET / HTTP/1.1\r\n"
+              "Content-Type: text/plain\r\n"
+              "Content-Length: 6\r\n"
+              "\r\n"
+              "fooba",
+              0);
+
+  static const char *all_methods[] = {
+    "DELETE",
+    "GET",
+    "HEAD",
+    "POST",
+    "PUT",
+    //"CONNECT", //CONNECT can't be tested like other methods, it's a tunnel
+    "OPTIONS",
+    "TRACE",
+    "COPY",
+    "LOCK",
+    "MKCOL",
+    "MOVE",
+    "PROPFIND",
+    "PROPPATCH",
+    "UNLOCK",
+    0 };
+  const char **this_method;
+  for (this_method = all_methods; *this_method; this_method++) {
+    char buf[200];
+    sprintf(buf, "%s / HTTP/1.1\r\n\r\n", *this_method);
+    test_simple(buf, 1);
+  }
 
   const char *dumbfuck2 =
     "GET / HTTP/1.1\r\n"
@@ -1121,7 +1943,7 @@ main (void)
     "\tRA==\r\n"
     "\t-----END CERTIFICATE-----\r\n"
     "\r\n";
-  test_error(dumbfuck2);
+  test_simple(dumbfuck2, 0);
 
 #if 0
   // NOTE(Wed Nov 18 11:57:27 CET 2009) this seems okay. we just read body
@@ -1133,7 +1955,7 @@ main (void)
                                            "Accept: */*\r\n"
                                            "\r\n"
                                            "HELLO";
-  test_error(bad_get_no_headers_no_body);
+  test_simple(bad_get_no_headers_no_body, 0);
 #endif
   /* TODO sending junk and large headers gets rejected */
 
@@ -1155,22 +1977,28 @@ main (void)
     }
   }
 
-  printf("request scan 1/3      ");
+  printf("request scan 1/4      ");
   test_scan( &requests[GET_NO_HEADERS_NO_BODY]
            , &requests[GET_ONE_HEADER_NO_BODY]
            , &requests[GET_NO_HEADERS_NO_BODY]
            );
 
-  printf("request scan 2/3      ");
+  printf("request scan 2/4      ");
   test_scan( &requests[POST_CHUNKED_ALL_YOUR_BASE]
            , &requests[POST_IDENTITY_BODY_WORLD]
            , &requests[GET_FUNKY_CONTENT_LENGTH]
            );
 
-  printf("request scan 3/3      ");
+  printf("request scan 3/4      ");
   test_scan( &requests[TWO_CHUNKS_MULT_ZERO_END]
            , &requests[CHUNKED_W_TRAILING_HEADERS]
            , &requests[CHUNKED_W_BULLSHIT_AFTER_LENGTH]
+           );
+
+  printf("request scan 4/4      ");
+  test_scan( &requests[QUERY_URL_WITH_QUESTION_MARK_GET]
+           , &requests[PREFIX_NEWLINE_GET ]
+           , &requests[CONNECT_REQUEST]
            );
 
   puts("requests okay");

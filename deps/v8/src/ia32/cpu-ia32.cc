@@ -33,6 +33,8 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_IA32)
+
 #include "cpu.h"
 #include "macro-assembler.h"
 
@@ -40,7 +42,11 @@ namespace v8 {
 namespace internal {
 
 void CPU::Setup() {
-  CpuFeatures::Probe();
+  CpuFeatures::Clear();
+  CpuFeatures::Probe(true);
+  if (!CpuFeatures::IsSupported(SSE2) || Serializer::enabled()) {
+    V8::DisableCrankshaft();
+  }
 }
 
 
@@ -77,3 +83,5 @@ void CPU::DebugBreak() {
 }
 
 } }  // namespace v8::internal
+
+#endif  // V8_TARGET_ARCH_IA32

@@ -29,53 +29,17 @@
 #ifndef V8_ARM_CODEGEN_ARM_INL_H_
 #define V8_ARM_CODEGEN_ARM_INL_H_
 
+#include "virtual-frame-arm.h"
+
 namespace v8 {
 namespace internal {
 
 #define __ ACCESS_MASM(masm_)
 
-void CodeGenerator::LoadConditionAndSpill(Expression* expression,
-                                          JumpTarget* true_target,
-                                          JumpTarget* false_target,
-                                          bool force_control) {
-  LoadCondition(expression, true_target, false_target, force_control);
-}
-
-
-void CodeGenerator::LoadAndSpill(Expression* expression) {
-  Load(expression);
-}
-
-
-void CodeGenerator::VisitAndSpill(Statement* statement) {
-  Visit(statement);
-}
-
-
-void CodeGenerator::VisitStatementsAndSpill(ZoneList<Statement*>* statements) {
-  VisitStatements(statements);
-}
-
-
-void Reference::GetValueAndSpill() {
-  GetValue();
-}
-
-
 // Platform-specific inline functions.
 
 void DeferredCode::Jump() { __ jmp(&entry_label_); }
-void DeferredCode::Branch(Condition cc) { __ b(cc, &entry_label_); }
-
-void CodeGenerator::GenerateMathSin(ZoneList<Expression*>* args) {
-  GenerateFastMathOp(SIN, args);
-}
-
-
-void CodeGenerator::GenerateMathCos(ZoneList<Expression*>* args) {
-  GenerateFastMathOp(COS, args);
-}
-
+void DeferredCode::Branch(Condition cond) { __ b(cond, &entry_label_); }
 
 #undef __
 

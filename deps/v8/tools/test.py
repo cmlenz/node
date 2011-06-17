@@ -331,10 +331,11 @@ class CommandOutput(object):
 
 class TestCase(object):
 
-  def __init__(self, context, path):
+  def __init__(self, context, path, mode):
     self.path = path
     self.context = context
     self.duration = None
+    self.mode = mode
 
   def IsNegative(self):
     return False
@@ -355,14 +356,19 @@ class TestCase(object):
 
   def RunCommand(self, command):
     full_command = self.context.processor(command)
-    output = Execute(full_command, self.context, self.context.timeout)
+    output = Execute(full_command,
+                     self.context,
+                     self.context.GetTimeout(self, self.mode))
     self.Cleanup()
-    return TestOutput(self, full_command, output)
+    return TestOutput(self,
+                      full_command,
+                      output,
+                      self.context.store_unexpected_output)
 
   def BeforeRun(self):
     pass
 
-  def AfterRun(self):
+  def AfterRun(self, result):
     pass
 
   def Run(self):
@@ -370,7 +376,7 @@ class TestCase(object):
     try:
       result = self.RunCommand(self.GetCommand())
     finally:
-      self.AfterRun()
+      self.AfterRun(result)
     return result
 
   def Cleanup(self):
@@ -379,10 +385,11 @@ class TestCase(object):
 
 class TestOutput(object):
 
-  def __init__(self, test, command, output):
+  def __init__(self, test, command, output, store_unexpected_output):
     self.test = test
     self.command = command
     self.output = output
+    self.store_unexpected_output = store_unexpected_output
 
   def UnexpectedOutput(self):
     if self.HasCrashed():
@@ -394,6 +401,9 @@ class TestOutput(object):
     else:
       outcome = PASS
     return not outcome in self.test.outcomes
+
+  def HasPreciousOutput(self):
+    return self.UnexpectedOutput() and self.store_unexpected_output
 
   def HasCrashed(self):
     if utils.IsWindows():
@@ -557,6 +567,11 @@ class TestSuite(object):
     return self.name
 
 
+# Use this to run several variants of the tests, e.g.:
+# VARIANT_FLAGS = [[], ['--always_compact', '--noflush_code']]
+VARIANT_FLAGS = [[], ['--stress-opt', '--always-opt'], ['--nocrankshaft']]
+
+
 class TestRepository(TestSuite):
 
   def __init__(self, path):
@@ -583,8 +598,12 @@ class TestRepository(TestSuite):
   def GetBuildRequirements(self, path, context):
     return self.GetConfiguration(context).GetBuildRequirements()
 
-  def ListTests(self, current_path, path, context, mode):
-    return self.GetConfiguration(context).ListTests(current_path, path, mode)
+  def AddTestsToList(self, result, current_path, path, context, mode):
+    for v in VARIANT_FLAGS:
+      tests = self.GetConfiguration(context).ListTests(current_path, path, mode)
+      for t in tests: t.variant_flags = v
+      result += tests
+
 
   def GetTestStatus(self, context, sections, defs):
     self.GetConfiguration(context).GetTestStatus(sections, defs)
@@ -611,7 +630,7 @@ class LiteralTestSuite(TestSuite):
       test_name = test.GetName()
       if not name or name.match(test_name):
         full_path = current_path + [test_name]
-        result += test.ListTests(full_path, path, context, mode)
+        test.AddTestsToList(result, full_path, path, context, mode)
     return result
 
   def GetTestStatus(self, context, sections, defs):
@@ -619,12 +638,20 @@ class LiteralTestSuite(TestSuite):
       test.GetTestStatus(context, sections, defs)
 
 
-SUFFIX = {'debug': '_g', 'release': ''}
+SUFFIX = {
+    'debug'   : '_g',
+    'release' : '' }
+FLAGS = {
+    'debug'   : ['--enable-slow-asserts', '--debug-code', '--verify-heap'],
+    'release' : []}
+TIMEOUT_SCALEFACTOR = {
+    'debug'   : 4,
+    'release' : 1 }
 
 
 class Context(object):
 
-  def __init__(self, workspace, buildspace, verbose, vm, timeout, processor, suppress_dialogs):
+  def __init__(self, workspace, buildspace, verbose, vm, timeout, processor, suppress_dialogs, store_unexpected_output):
     self.workspace = workspace
     self.buildspace = buildspace
     self.verbose = verbose
@@ -632,6 +659,7 @@ class Context(object):
     self.timeout = timeout
     self.processor = processor
     self.suppress_dialogs = suppress_dialogs
+    self.store_unexpected_output = store_unexpected_output
 
   def GetVm(self, mode):
     name = self.vm_root + SUFFIX[mode]
@@ -639,10 +667,20 @@ class Context(object):
       name = name + '.exe'
     return name
 
-def RunTestCases(all_cases, progress, tasks):
-  def DoSkip(case):
-    return SKIP in c.outcomes or SLOW in c.outcomes
-  cases_to_run = [ c for c in all_cases if not DoSkip(c) ]
+  def GetVmCommand(self, testcase, mode):
+    return [self.GetVm(mode)] + self.GetVmFlags(testcase, mode)
+
+  def GetVmFlags(self, testcase, mode):
+    return testcase.variant_flags + FLAGS[mode]
+
+  def GetTimeout(self, testcase, mode):
+    result = self.timeout * TIMEOUT_SCALEFACTOR[mode]
+    if '--stress-opt' in self.GetVmFlags(testcase, mode):
+      return result * 2
+    else:
+      return result
+
+def RunTestCases(cases_to_run, progress, tasks):
   progress = PROGRESS_INDICATORS[progress](cases_to_run)
   return progress.Run(tasks)
 
@@ -690,6 +728,9 @@ class Variable(Expression):
   def GetOutcomes(self, env, defs):
     if self.name in env: return ListSet([env[self.name]])
     else: return Nothing()
+
+  def Evaluate(self, env, defs):
+    return env[self.name]
 
 
 class Outcome(Expression):
@@ -1124,7 +1165,30 @@ def BuildOptions():
         dest="suppress_dialogs", default=True, action="store_true")
   result.add_option("--no-suppress-dialogs", help="Display Windows dialogs for crashing tests",
         dest="suppress_dialogs", action="store_false")
-  result.add_option("--shell", help="Path to V8 shell", default="shell");
+  result.add_option("--shell", help="Path to V8 shell", default="shell")
+  result.add_option("--store-unexpected-output",
+      help="Store the temporary JS files from tests that fails",
+      dest="store_unexpected_output", default=True, action="store_true")
+  result.add_option("--no-store-unexpected-output",
+      help="Deletes the temporary JS files from tests that fails",
+      dest="store_unexpected_output", action="store_false")
+  result.add_option("--stress-only",
+                    help="Only run tests with --always-opt --stress-opt",
+                    default=False, action="store_true")
+  result.add_option("--nostress",
+                    help="Don't run crankshaft --always-opt --stress-op test",
+                    default=False, action="store_true")
+  result.add_option("--crankshaft",
+                    help="Run with the --crankshaft flag",
+                    default=False, action="store_true")
+  result.add_option("--shard-count",
+                    help="Split testsuites into this number of shards",
+                    default=1, type="int")
+  result.add_option("--shard-run",
+                    help="Run this shard from the split up tests.",
+                    default=1, type="int")
+  result.add_option("--noprof", help="Disable profiling support",
+                    default=False)
   return result
 
 
@@ -1154,6 +1218,19 @@ def ProcessOptions(options):
     options.scons_flags.append("arch=" + options.arch)
   if options.snapshot:
     options.scons_flags.append("snapshot=on")
+  global VARIANT_FLAGS
+  if options.stress_only:
+    VARIANT_FLAGS = [['--stress-opt', '--always-opt']]
+  if options.nostress:
+    VARIANT_FLAGS = [[],['--nocrankshaft']]
+  if options.crankshaft:
+    if options.special_command:
+      options.special_command += " --crankshaft"
+    else:
+      options.special_command = "@--crankshaft"
+  if options.noprof:
+    options.scons_flags.append("prof=off")
+    options.scons_flags.append("profilingsupport=off")
   return True
 
 
@@ -1231,6 +1308,20 @@ def FormatTime(d):
   millis = round(d * 1000) % 1000
   return time.strftime("%M:%S.", time.gmtime(d)) + ("%03i" % millis)
 
+def ShardTests(tests, options):
+  if options.shard_count < 2:
+    return tests
+  if options.shard_run < 1 or options.shard_run > options.shard_count:
+    print "shard-run not a valid number, should be in [1:shard-count]"
+    print "defaulting back to running all tests"
+    return tests
+  count = 0;
+  shard = []
+  for test in tests:
+    if count % options.shard_count == options.shard_run - 1:
+      shard.append(test);
+    count += 1
+  return shard
 
 def Main():
   parser = BuildOptions()
@@ -1261,11 +1352,13 @@ def Main():
 
   shell = abspath(options.shell)
   buildspace = dirname(shell)
+
   context = Context(workspace, buildspace, VERBOSE,
                     shell,
                     options.timeout,
                     GetSpecialCommandProcessor(options.special_command),
-                    options.suppress_dialogs)
+                    options.suppress_dialogs,
+                    options.store_unexpected_output)
   # First build the required targets
   if not options.no_build:
     reqs = [ ]
@@ -1281,7 +1374,7 @@ def Main():
   # Just return if we are only building the targets for running the tests.
   if options.build_only:
     return 0
-  
+
   # Get status for tests
   sections = [ ]
   defs = { }
@@ -1302,7 +1395,8 @@ def Main():
         'mode': mode,
         'system': utils.GuessOS(),
         'arch': options.arch,
-        'simulator': options.simulator
+        'simulator': options.simulator,
+        'crankshaft': options.crankshaft
       }
       test_list = root.ListTests([], path, context, mode)
       unclassified_tests += test_list
@@ -1311,7 +1405,7 @@ def Main():
         globally_unused_rules = set(unused_rules)
       else:
         globally_unused_rules = globally_unused_rules.intersection(unused_rules)
-      all_cases += cases
+      all_cases += ShardTests(cases, options)
       all_unused.append(unused_rules)
 
   if options.cat:
@@ -1335,13 +1429,16 @@ def Main():
     PrintReport(all_cases)
 
   result = None
-  if len(all_cases) == 0:
+  def DoSkip(case):
+    return SKIP in case.outcomes or SLOW in case.outcomes
+  cases_to_run = [ c for c in all_cases if not DoSkip(c) ]
+  if len(cases_to_run) == 0:
     print "No tests to run."
     return 0
   else:
     try:
       start = time.time()
-      if RunTestCases(all_cases, options.progress, options.j):
+      if RunTestCases(cases_to_run, options.progress, options.j):
         result = 0
       else:
         result = 1
@@ -1355,7 +1452,7 @@ def Main():
     # test output.
     print
     sys.stderr.write("--- Total time: %s ---\n" % FormatTime(duration))
-    timed_tests = [ t.case for t in all_cases if not t.case.duration is None ]
+    timed_tests = [ t.case for t in cases_to_run if not t.case.duration is None ]
     timed_tests.sort(lambda a, b: a.CompareTime(b))
     index = 1
     for entry in timed_tests[:20]:

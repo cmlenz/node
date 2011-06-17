@@ -73,7 +73,24 @@ const kDayMask            = 0x01f;
 const kYearShift          = 9;
 const kMonthShift         = 5;
 
+# Limits for parts of the date, so that we support all the dates that
+# ECMA 262 - 15.9.1.1 requires us to, but at the same time be sure that
+# the date (days since 1970) is in SMI range.
+const kMinYear  = -1000000;
+const kMaxYear  = 1000000;
+const kMinMonth = -10000000;
+const kMaxMonth = 10000000;
+const kMinDate  = -100000000;
+const kMaxDate  = 100000000;
+
+# Native cache ids.
+const STRING_TO_REGEXP_CACHE_ID = 0;
+
 # Type query macros.
+#
+# Note: We have special support for typeof(foo) === 'bar' in the compiler.
+#       It will *not* generate a runtime typeof call for the most important
+#       values of 'bar'.
 macro IS_NULL(arg)              = (arg === null);
 macro IS_NULL_OR_UNDEFINED(arg) = (arg == null);
 macro IS_UNDEFINED(arg)         = (typeof(arg) === 'undefined');
@@ -83,7 +100,7 @@ macro IS_BOOLEAN(arg)           = (typeof(arg) === 'boolean');
 macro IS_OBJECT(arg)            = (%_IsObject(arg));
 macro IS_ARRAY(arg)             = (%_IsArray(arg));
 macro IS_FUNCTION(arg)          = (%_IsFunction(arg));
-macro IS_REGEXP(arg)            = (%_ClassOf(arg) === 'RegExp');
+macro IS_REGEXP(arg)            = (%_IsRegExp(arg));
 macro IS_DATE(arg)              = (%_ClassOf(arg) === 'Date');
 macro IS_NUMBER_WRAPPER(arg)    = (%_ClassOf(arg) === 'Number');
 macro IS_STRING_WRAPPER(arg)    = (%_ClassOf(arg) === 'String');
@@ -92,19 +109,28 @@ macro IS_ERROR(arg)             = (%_ClassOf(arg) === 'Error');
 macro IS_SCRIPT(arg)            = (%_ClassOf(arg) === 'Script');
 macro IS_ARGUMENTS(arg)         = (%_ClassOf(arg) === 'Arguments');
 macro IS_GLOBAL(arg)            = (%_ClassOf(arg) === 'global');
-macro FLOOR(arg)                = %Math_floor(arg);
+macro IS_UNDETECTABLE(arg)      = (%_IsUndetectableObject(arg));
+macro FLOOR(arg)                = $floor(arg);
+
+# Macro for ECMAScript 5 queries of the type:
+# "Type(O) is object."
+# This is the same as being either a function or an object in V8 terminology.
+# In addition, an undetectable object is also included by this.
+macro IS_SPEC_OBJECT(arg) = (%_IsSpecObject(arg));
 
 # Inline macros. Use %IS_VAR to make sure arg is evaluated only once.
 macro NUMBER_IS_NAN(arg) = (!%_IsSmi(%IS_VAR(arg)) && !(arg == arg));
-macro TO_INTEGER(arg)    = (%_IsSmi(%IS_VAR(arg)) ? arg : ToInteger(arg));
-macro TO_INT32(arg)      = (%_IsSmi(%IS_VAR(arg)) ? arg : ToInt32(arg));
+macro NUMBER_IS_FINITE(arg) = (%_IsSmi(%IS_VAR(arg)) || arg - arg == 0);
+macro TO_INTEGER(arg) = (%_IsSmi(%IS_VAR(arg)) ? arg : %NumberToInteger(ToNumber(arg)));
+macro TO_INTEGER_MAP_MINUS_ZERO(arg) = (%_IsSmi(%IS_VAR(arg)) ? arg : %NumberToIntegerMapMinusZero(ToNumber(arg)));
+macro TO_INT32(arg) = (%_IsSmi(%IS_VAR(arg)) ? arg : (arg >> 0));
+macro TO_UINT32(arg) = (arg >>> 0);
+macro TO_STRING_INLINE(arg) = (IS_STRING(%IS_VAR(arg)) ? arg : NonStringToString(arg));
+macro TO_NUMBER_INLINE(arg) = (IS_NUMBER(%IS_VAR(arg)) ? arg : NonNumberToNumber(arg));
+
 
 # Macros implemented in Python.
 python macro CHAR_CODE(str) = ord(str[1]);
-
-# Accessors for original global properties that ensure they have been loaded.
-const ORIGINAL_REGEXP = (global.RegExp, $RegExp);
-const ORIGINAL_DATE   = (global.Date, $Date);
 
 # Constants used on an array to implement the properties of the RegExp object.
 const REGEXP_NUMBER_OF_CAPTURES = 0;
@@ -114,9 +140,23 @@ const REGEXP_FIRST_CAPTURE = 3;
 # REGEXP_NUMBER_OF_CAPTURES
 macro NUMBER_OF_CAPTURES(array) = ((array)[0]);
 
+# Limit according to ECMA 262 15.9.1.1
+const MAX_TIME_MS = 8640000000000000;
+# Limit which is MAX_TIME_MS + msPerMonth.
+const MAX_TIME_BEFORE_UTC = 8640002592000000;
+
 # Gets the value of a Date object. If arg is not a Date object
 # a type error is thrown.
 macro DATE_VALUE(arg) = (%_ClassOf(arg) === 'Date' ? %_ValueOf(arg) : ThrowDateTypeError());
+macro DAY(time) = ($floor(time / 86400000));
+macro NAN_OR_DATE_FROM_TIME(time) = (NUMBER_IS_NAN(time) ? time : DateFromTime(time));
+macro HOUR_FROM_TIME(time) = (Modulo($floor(time / 3600000), 24));
+macro MIN_FROM_TIME(time) = (Modulo($floor(time / 60000), 60));
+macro NAN_OR_MIN_FROM_TIME(time) = (NUMBER_IS_NAN(time) ? time : MIN_FROM_TIME(time));
+macro SEC_FROM_TIME(time) = (Modulo($floor(time / 1000), 60));
+macro NAN_OR_SEC_FROM_TIME(time) = (NUMBER_IS_NAN(time) ? time : SEC_FROM_TIME(time));
+macro MS_FROM_TIME(time) = (Modulo(time, 1000));
+macro NAN_OR_MS_FROM_TIME(time) = (NUMBER_IS_NAN(time) ? time : MS_FROM_TIME(time));
 
 # Last input and last subject of regexp matches.
 macro LAST_SUBJECT(array) = ((array)[1]);
@@ -126,3 +166,13 @@ macro LAST_INPUT(array) = ((array)[2]);
 macro CAPTURE(index) = (3 + (index));
 const CAPTURE0 = 3;
 const CAPTURE1 = 4;
+
+# PropertyDescriptor return value indices - must match 
+# PropertyDescriptorIndices in runtime.cc.
+const IS_ACCESSOR_INDEX = 0;
+const VALUE_INDEX = 1;
+const GETTER_INDEX = 2;
+const SETTER_INDEX = 3;
+const WRITABLE_INDEX = 4;
+const ENUMERABLE_INDEX = 5;
+const CONFIGURABLE_INDEX = 6;

@@ -30,7 +30,7 @@
 
 // The original source code covered by the above license above has been
 // modified significantly by Google Inc.
-// Copyright 2006-2009 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 
 // A lightweight X64 Assembler.
 
@@ -46,23 +46,23 @@ namespace internal {
 
 // Test whether a 64-bit value is in a specific range.
 static inline bool is_uint32(int64_t x) {
-  static const int64_t kUInt32Mask = V8_INT64_C(0xffffffff);
-  return x == (x & kUInt32Mask);
+  static const uint64_t kMaxUInt32 = V8_UINT64_C(0xffffffff);
+  return static_cast<uint64_t>(x) <= kMaxUInt32;
 }
 
 static inline bool is_int32(int64_t x) {
-  static const int64_t kMinIntValue = V8_INT64_C(-0x80000000);
-  return is_uint32(x - kMinIntValue);
+  static const int64_t kMinInt32 = -V8_INT64_C(0x80000000);
+  return is_uint32(x - kMinInt32);
 }
 
 static inline bool uint_is_int32(uint64_t x) {
-  static const uint64_t kMaxIntValue = V8_UINT64_C(0x80000000);
-  return x < kMaxIntValue;
+  static const uint64_t kMaxInt32 = V8_UINT64_C(0x7fffffff);
+  return x <= kMaxInt32;
 }
 
 static inline bool is_uint32(uint64_t x) {
-  static const uint64_t kMaxUIntValue = V8_UINT64_C(0x100000000);
-  return x < kMaxUIntValue;
+  static const uint64_t kMaxUInt32 = V8_UINT64_C(0xffffffff);
+  return x <= kMaxUInt32;
 }
 
 // CPU Registers.
@@ -88,17 +88,54 @@ static inline bool is_uint32(uint64_t x) {
 //
 
 struct Register {
+  // The non-allocatable registers are:
+  //  rsp - stack pointer
+  //  rbp - frame pointer
+  //  rsi - context register
+  //  r10 - fixed scratch register
+  //  r13 - root register
+  //  r15 - smi constant register
+  static const int kNumRegisters = 16;
+  static const int kNumAllocatableRegisters = 10;
+
+  static int ToAllocationIndex(Register reg) {
+    return kAllocationIndexByRegisterCode[reg.code()];
+  }
+
+  static Register FromAllocationIndex(int index) {
+    ASSERT(index >= 0 && index < kNumAllocatableRegisters);
+    Register result = { kRegisterCodeByAllocationIndex[index] };
+    return result;
+  }
+
+  static const char* AllocationIndexToString(int index) {
+    ASSERT(index >= 0 && index < kNumAllocatableRegisters);
+    const char* const names[] = {
+      "rax",
+      "rbx",
+      "rdx",
+      "rcx",
+      "rdi",
+      "r8",
+      "r9",
+      "r11",
+      "r14",
+      "r12"
+    };
+    return names[index];
+  }
+
   static Register toRegister(int code) {
     Register r = { code };
     return r;
   }
-  bool is_valid() const  { return 0 <= code_ && code_ < 16; }
-  bool is(Register reg) const  { return code_ == reg.code_; }
-  int code() const  {
+  bool is_valid() const { return 0 <= code_ && code_ < kNumRegisters; }
+  bool is(Register reg) const { return code_ == reg.code_; }
+  int code() const {
     ASSERT(is_valid());
     return code_;
   }
-  int bit() const  {
+  int bit() const {
     return 1 << code_;
   }
 
@@ -113,61 +150,74 @@ struct Register {
     return code_ & 0x7;
   }
 
-  // (unfortunately we can't make this private in a struct when initializing
-  // by assignment.)
+  // Unfortunately we can't make this private in a struct when initializing
+  // by assignment.
   int code_;
+
+ private:
+  static const int kRegisterCodeByAllocationIndex[kNumAllocatableRegisters];
+  static const int kAllocationIndexByRegisterCode[kNumRegisters];
 };
 
-extern Register rax;
-extern Register rcx;
-extern Register rdx;
-extern Register rbx;
-extern Register rsp;
-extern Register rbp;
-extern Register rsi;
-extern Register rdi;
-extern Register r8;
-extern Register r9;
-extern Register r10;
-extern Register r11;
-extern Register r12;
-extern Register r13;
-extern Register r14;
-extern Register r15;
-extern Register no_reg;
-
-
-struct MMXRegister {
-  bool is_valid() const  { return 0 <= code_ && code_ < 2; }
-  int code() const  {
-    ASSERT(is_valid());
-    return code_;
-  }
-
-  int code_;
-};
-
-extern MMXRegister mm0;
-extern MMXRegister mm1;
-extern MMXRegister mm2;
-extern MMXRegister mm3;
-extern MMXRegister mm4;
-extern MMXRegister mm5;
-extern MMXRegister mm6;
-extern MMXRegister mm7;
-extern MMXRegister mm8;
-extern MMXRegister mm9;
-extern MMXRegister mm10;
-extern MMXRegister mm11;
-extern MMXRegister mm12;
-extern MMXRegister mm13;
-extern MMXRegister mm14;
-extern MMXRegister mm15;
+const Register rax = { 0 };
+const Register rcx = { 1 };
+const Register rdx = { 2 };
+const Register rbx = { 3 };
+const Register rsp = { 4 };
+const Register rbp = { 5 };
+const Register rsi = { 6 };
+const Register rdi = { 7 };
+const Register r8 = { 8 };
+const Register r9 = { 9 };
+const Register r10 = { 10 };
+const Register r11 = { 11 };
+const Register r12 = { 12 };
+const Register r13 = { 13 };
+const Register r14 = { 14 };
+const Register r15 = { 15 };
+const Register no_reg = { -1 };
 
 
 struct XMMRegister {
-  bool is_valid() const  { return 0 <= code_ && code_ < 16; }
-  int code() const  {
+  static const int kNumRegisters = 16;
+  static const int kNumAllocatableRegisters = 15;
+
+  static int ToAllocationIndex(XMMRegister reg) {
+    ASSERT(reg.code() != 0);
+    return reg.code() - 1;
+  }
+
+  static XMMRegister FromAllocationIndex(int index) {
+    ASSERT(0 <= index && index < kNumAllocatableRegisters);
+    XMMRegister result = { index + 1 };
+    return result;
+  }
+
+  static const char* AllocationIndexToString(int index) {
+    ASSERT(index >= 0 && index < kNumAllocatableRegisters);
+    const char* const names[] = {
+      "xmm1",
+      "xmm2",
+      "xmm3",
+      "xmm4",
+      "xmm5",
+      "xmm6",
+      "xmm7",
+      "xmm8",
+      "xmm9",
+      "xmm10",
+      "xmm11",
+      "xmm12",
+      "xmm13",
+      "xmm14",
+      "xmm15"
+    };
+    return names[index];
+  }
+
+  bool is_valid() const { return 0 <= code_ && code_ < kNumRegisters; }
+  bool is(XMMRegister reg) const { return code_ == reg.code_; }
+  int code() const {
     ASSERT(is_valid());
     return code_;
   }
@@ -186,22 +236,26 @@ struct XMMRegister {
   int code_;
 };
 
-extern XMMRegister xmm0;
-extern XMMRegister xmm1;
-extern XMMRegister xmm2;
-extern XMMRegister xmm3;
-extern XMMRegister xmm4;
-extern XMMRegister xmm5;
-extern XMMRegister xmm6;
-extern XMMRegister xmm7;
-extern XMMRegister xmm8;
-extern XMMRegister xmm9;
-extern XMMRegister xmm10;
-extern XMMRegister xmm11;
-extern XMMRegister xmm12;
-extern XMMRegister xmm13;
-extern XMMRegister xmm14;
-extern XMMRegister xmm15;
+const XMMRegister xmm0 = { 0 };
+const XMMRegister xmm1 = { 1 };
+const XMMRegister xmm2 = { 2 };
+const XMMRegister xmm3 = { 3 };
+const XMMRegister xmm4 = { 4 };
+const XMMRegister xmm5 = { 5 };
+const XMMRegister xmm6 = { 6 };
+const XMMRegister xmm7 = { 7 };
+const XMMRegister xmm8 = { 8 };
+const XMMRegister xmm9 = { 9 };
+const XMMRegister xmm10 = { 10 };
+const XMMRegister xmm11 = { 11 };
+const XMMRegister xmm12 = { 12 };
+const XMMRegister xmm13 = { 13 };
+const XMMRegister xmm14 = { 14 };
+const XMMRegister xmm15 = { 15 };
+
+
+typedef XMMRegister DoubleRegister;
+
 
 enum Condition {
   // any value < 0 is considered no_condition
@@ -243,7 +297,10 @@ enum Condition {
 // Negation of the default no_condition (-1) results in a non-default
 // no_condition value (-2). As long as tests for no_condition check
 // for condition < 0, this will work as expected.
-inline Condition NegateCondition(Condition cc);
+inline Condition NegateCondition(Condition cc) {
+  return static_cast<Condition>(cc ^ 1);
+}
+
 
 // Corresponds to transposing the operands of a comparison.
 inline Condition ReverseCondition(Condition cc) {
@@ -268,6 +325,7 @@ inline Condition ReverseCondition(Condition cc) {
       return cc;
   };
 }
+
 
 enum Hint {
   no_hint = 0,
@@ -308,7 +366,6 @@ enum ScaleFactor {
   times_4 = 2,
   times_8 = 3,
   times_int_size = times_4,
-  times_half_pointer_size = times_4,
   times_pointer_size = times_8
 };
 
@@ -329,12 +386,20 @@ class Operand BASE_EMBEDDED {
           ScaleFactor scale,
           int32_t disp);
 
+  // Offset from existing memory operand.
+  // Offset is added to existing displacement as 32-bit signed values and
+  // this must not overflow.
+  Operand(const Operand& base, int32_t offset);
+
+  // Checks whether either base or index register is the given register.
+  // Does not check the "reg" part of the Operand.
+  bool AddressUsesRegister(Register reg) const;
+
  private:
   byte rex_;
-  byte buf_[10];
-  // The number of bytes in buf_.
-  unsigned int len_;
-  RelocInfo::Mode rmode_;
+  byte buf_[6];
+  // The number of bytes of buf_ in use.
+  byte len_;
 
   // Set the ModR/M byte without an encoded 'reg' register. The
   // register is encoded later as part of the emit_operand operation.
@@ -366,7 +431,7 @@ class CpuFeatures : public AllStatic {
  public:
   // Detect features of the target CPU. Set safe defaults if the serializer
   // is enabled (snapshots must be portable).
-  static void Probe();
+  static void Probe(bool portable);
   // Check whether a feature is supported by the target CPU.
   static bool IsSupported(CpuFeature f) {
     if (f == SSE2 && !FLAG_enable_sse2) return false;
@@ -480,13 +545,37 @@ class Assembler : public Malloced {
   // return address.  TODO: Use return sequence length instead.
   // Should equal Debug::kX64JSReturnSequenceLength - kCallTargetAddressOffset;
   static const int kPatchReturnSequenceAddressOffset = 13 - 4;
+  // Distance between start of patched debug break slot and where the
+  // 32-bit displacement of a near call would be, relative to the pushed
+  // return address.  TODO: Use return sequence length instead.
+  // Should equal Debug::kX64JSReturnSequenceLength - kCallTargetAddressOffset;
+  static const int kPatchDebugBreakSlotAddressOffset = 13 - 4;
   // TODO(X64): Rename this, removing the "Real", after changing the above.
   static const int kRealPatchReturnSequenceAddressOffset = 2;
 
-  // The x64 JS return sequence is padded with int3 to make it large
-  // enough to hold a call instruction when the debugger patches it.
+  // Some x64 JS code is padded with int3 to make it large
+  // enough to hold an instruction when the debugger patches it.
+  static const int kJumpInstructionLength = 13;
   static const int kCallInstructionLength = 13;
   static const int kJSReturnSequenceLength = 13;
+  static const int kShortCallInstructionLength = 5;
+
+  // The debug break slot must be able to contain a call instruction.
+  static const int kDebugBreakSlotLength = kCallInstructionLength;
+
+  // One byte opcode for test eax,0xXXXXXXXX.
+  static const byte kTestEaxByte = 0xA9;
+  // One byte opcode for test al, 0xXX.
+  static const byte kTestAlByte = 0xA8;
+  // One byte opcode for nop.
+  static const byte kNopByte = 0x90;
+
+  // One byte prefix for a short conditional jump.
+  static const byte kJccShortPrefix = 0x70;
+  static const byte kJncShortOpcode = kJccShortPrefix | not_carry;
+  static const byte kJcShortOpcode = kJccShortPrefix | carry;
+
+
 
   // ---------------------------------------------------------------------------
   // Code generation
@@ -509,17 +598,21 @@ class Assembler : public Malloced {
 
   // Insert the smallest number of nop instructions
   // possible to align the pc offset to a multiple
-  // of m. m must be a power of 2.
+  // of m, where m must be a power of 2.
   void Align(int m);
+  // Aligns code to something that's optimal for a jump target for the platform.
+  void CodeTargetAlign();
 
   // Stack
   void pushfq();
   void popfq();
 
   void push(Immediate value);
+  // Push a 32 bit integer, and guarantee that it is actually pushed as a
+  // 32 bit value, the normal push will optimize the 8 bit case.
+  void push_imm32(int32_t imm32);
   void push(Register src);
   void push(const Operand& src);
-  void push(Label* label, RelocInfo::Mode relocation_mode);
 
   void pop(Register dst);
   void pop(const Operand& dst);
@@ -574,6 +667,13 @@ class Assembler : public Malloced {
   void movzxwq(Register dst, const Operand& src);
   void movzxwl(Register dst, const Operand& src);
 
+  // Repeated moves.
+
+  void repmovsb();
+  void repmovsw();
+  void repmovsl();
+  void repmovsq();
+
   // New x64 instruction to load from an immediate 64-bit pointer into RAX.
   void load_rax(void* ptr, RelocInfo::Mode rmode);
   void load_rax(ExternalReference ext);
@@ -589,11 +689,7 @@ class Assembler : public Malloced {
 
   // Arithmetics
   void addl(Register dst, Register src) {
-    if (dst.low_bits() == 4) {  // Forces SIB byte.
-      arithmetic_op_32(0x01, src, dst);
-    } else {
-      arithmetic_op_32(0x03, dst, src);
-    }
+    arithmetic_op_32(0x03, dst, src);
   }
 
   void addl(Register dst, Immediate src) {
@@ -626,6 +722,14 @@ class Assembler : public Malloced {
 
   void addq(const Operand& dst, Immediate src) {
     immediate_arithmetic_op(0x0, dst, src);
+  }
+
+  void sbbl(Register dst, Register src) {
+    arithmetic_op_32(0x1b, dst, src);
+  }
+
+  void sbbq(Register dst, Register src) {
+    arithmetic_op(0x1b, dst, src);
   }
 
   void cmpb(Register dst, Immediate src) {
@@ -738,6 +842,13 @@ class Assembler : public Malloced {
     arithmetic_op_32(0x23, dst, src);
   }
 
+  void andl(Register dst, const Operand& src) {
+    arithmetic_op_32(0x23, dst, src);
+  }
+
+  void andb(Register dst, Immediate src) {
+    immediate_arithmetic_op_8(0x4, dst, src);
+  }
 
   void decq(Register dst);
   void decq(const Operand& dst);
@@ -761,14 +872,18 @@ class Assembler : public Malloced {
   void imul(Register dst, Register src);                 // dst = dst * src.
   void imul(Register dst, const Operand& src);           // dst = dst * src.
   void imul(Register dst, Register src, Immediate imm);  // dst = src * imm.
-  // Multiply 32 bit registers
-  void imull(Register dst, Register src);                // dst = dst * src.
+  // Signed 32-bit multiply instructions.
+  void imull(Register dst, Register src);                 // dst = dst * src.
+  void imull(Register dst, const Operand& src);           // dst = dst * src.
+  void imull(Register dst, Register src, Immediate imm);  // dst = src * imm.
 
   void incq(Register dst);
   void incq(const Operand& dst);
+  void incl(Register dst);
   void incl(const Operand& dst);
 
   void lea(Register dst, const Operand& src);
+  void leal(Register dst, const Operand& src);
 
   // Multiply rax by src, put the result in rdx:rax.
   void mul(Register src);
@@ -779,6 +894,7 @@ class Assembler : public Malloced {
 
   void not_(Register dst);
   void not_(const Operand& dst);
+  void notl(Register dst);
 
   void or_(Register dst, Register src) {
     arithmetic_op(0x0B, dst, src);
@@ -790,6 +906,10 @@ class Assembler : public Malloced {
 
   void or_(Register dst, const Operand& src) {
     arithmetic_op(0x0B, dst, src);
+  }
+
+  void orl(Register dst, const Operand& src) {
+    arithmetic_op_32(0x0B, dst, src);
   }
 
   void or_(const Operand& dst, Register src) {
@@ -916,6 +1036,10 @@ class Assembler : public Malloced {
     arithmetic_op_32(0x2B, dst, src);
   }
 
+  void subl(Register dst, const Operand& src) {
+    arithmetic_op_32(0x2B, dst, src);
+  }
+
   void subl(const Operand& dst, Immediate src) {
     immediate_arithmetic_op_32(0x5, dst, src);
   }
@@ -931,6 +1055,7 @@ class Assembler : public Malloced {
   void testb(Register dst, Register src);
   void testb(Register reg, Immediate mask);
   void testb(const Operand& op, Immediate mask);
+  void testb(const Operand& op, Register reg);
   void testl(Register dst, Register src);
   void testl(Register reg, Immediate mask);
   void testl(const Operand& op, Immediate mask);
@@ -948,6 +1073,18 @@ class Assembler : public Malloced {
 
   void xorl(Register dst, Register src) {
     arithmetic_op_32(0x33, dst, src);
+  }
+
+  void xorl(Register dst, const Operand& src) {
+    arithmetic_op_32(0x33, dst, src);
+  }
+
+  void xorl(Register dst, Immediate src) {
+    immediate_arithmetic_op_32(0x6, dst, src);
+  }
+
+  void xorl(const Operand& dst, Immediate src) {
+    immediate_arithmetic_op_32(0x6, dst, src);
   }
 
   void xor_(Register dst, const Operand& src) {
@@ -997,11 +1134,18 @@ class Assembler : public Malloced {
   // but it may be bound only once.
 
   void bind(Label* L);  // binds an unbound label L to the current code position
+  void bind(NearLabel* L);
 
   // Calls
   // Call near relative 32-bit displacement, relative to next instruction.
   void call(Label* L);
   void call(Handle<Code> target, RelocInfo::Mode rmode);
+
+  // Calls directly to the given address using a relative offset.
+  // Should only ever be used in Code objects for calls within the
+  // same Code object. Should not be used when generating new code (use labels),
+  // but only when patching existing code.
+  void call(Address target);
 
   // Call near absolute indirect, address in register
   void call(Register adr);
@@ -1021,15 +1165,23 @@ class Assembler : public Malloced {
   // Jump near absolute indirect (m64)
   void jmp(const Operand& src);
 
+  // Short jump
+  void jmp(NearLabel* L);
+
   // Conditional jumps
   void j(Condition cc, Label* L);
   void j(Condition cc, Handle<Code> target, RelocInfo::Mode rmode);
+
+  // Conditional short jump
+  void j(Condition cc, NearLabel* L, Hint hint = no_hint);
 
   // Floating-point operations
   void fld(int i);
 
   void fld1();
   void fldz();
+  void fldpi();
+  void fldln2();
 
   void fld_s(const Operand& adr);
   void fld_d(const Operand& adr);
@@ -1047,6 +1199,7 @@ class Assembler : public Malloced {
   void fistp_d(const Operand& adr);
 
   void fisttp_s(const Operand& adr);
+  void fisttp_d(const Operand& adr);
 
   void fabs();
   void fchs();
@@ -1083,37 +1236,69 @@ class Assembler : public Malloced {
 
   void fsin();
   void fcos();
+  void fyl2x();
 
   void frndint();
 
   void sahf();
 
   // SSE2 instructions
+  void movd(XMMRegister dst, Register src);
+  void movd(Register dst, XMMRegister src);
+  void movq(XMMRegister dst, Register src);
+  void movq(Register dst, XMMRegister src);
+  void extractps(Register dst, XMMRegister src, byte imm8);
+
   void movsd(const Operand& dst, XMMRegister src);
-  void movsd(XMMRegister src, XMMRegister dst);
-  void movsd(XMMRegister src, const Operand& dst);
+  void movsd(XMMRegister dst, XMMRegister src);
+  void movsd(XMMRegister dst, const Operand& src);
+
+  void movdqa(const Operand& dst, XMMRegister src);
+  void movdqa(XMMRegister dst, const Operand& src);
+
+  void movss(XMMRegister dst, const Operand& src);
+  void movss(const Operand& dst, XMMRegister src);
 
   void cvttss2si(Register dst, const Operand& src);
+  void cvttss2si(Register dst, XMMRegister src);
   void cvttsd2si(Register dst, const Operand& src);
+  void cvttsd2si(Register dst, XMMRegister src);
+  void cvttsd2siq(Register dst, XMMRegister src);
 
   void cvtlsi2sd(XMMRegister dst, const Operand& src);
   void cvtlsi2sd(XMMRegister dst, Register src);
   void cvtqsi2sd(XMMRegister dst, const Operand& src);
   void cvtqsi2sd(XMMRegister dst, Register src);
 
+  void cvtlsi2ss(XMMRegister dst, Register src);
+
+  void cvtss2sd(XMMRegister dst, XMMRegister src);
+  void cvtss2sd(XMMRegister dst, const Operand& src);
+  void cvtsd2ss(XMMRegister dst, XMMRegister src);
+
+  void cvtsd2si(Register dst, XMMRegister src);
+  void cvtsd2siq(Register dst, XMMRegister src);
+
   void addsd(XMMRegister dst, XMMRegister src);
   void subsd(XMMRegister dst, XMMRegister src);
   void mulsd(XMMRegister dst, XMMRegister src);
   void divsd(XMMRegister dst, XMMRegister src);
 
+  void andpd(XMMRegister dst, XMMRegister src);
+  void orpd(XMMRegister dst, XMMRegister src);
+  void xorpd(XMMRegister dst, XMMRegister src);
+  void sqrtsd(XMMRegister dst, XMMRegister src);
 
+  void ucomisd(XMMRegister dst, XMMRegister src);
+  void ucomisd(XMMRegister dst, const Operand& src);
+
+  void movmskpd(Register dst, XMMRegister src);
+
+  // The first argument is the reg field, the second argument is the r/m field.
   void emit_sse_operand(XMMRegister dst, XMMRegister src);
   void emit_sse_operand(XMMRegister reg, const Operand& adr);
   void emit_sse_operand(XMMRegister dst, Register src);
-
-  // Use either movsd or movlpd.
-  // void movdbl(XMMRegister dst, const Operand& src);
-  // void movdbl(const Operand& dst, XMMRegister src);
+  void emit_sse_operand(Register dst, XMMRegister src);
 
   // Debugging
   void Print();
@@ -1124,17 +1309,21 @@ class Assembler : public Malloced {
   // Mark address of the ExitJSFrame code.
   void RecordJSReturn();
 
+  // Mark address of a debug break slot.
+  void RecordDebugBreakSlot();
+
   // Record a comment relocation entry that can be used by a disassembler.
-  // Use --debug_code to enable.
-  void RecordComment(const char* msg);
+  // Use --code-comments to enable.
+  void RecordComment(const char* msg, bool force = false);
 
-  void RecordPosition(int pos);
-  void RecordStatementPosition(int pos);
-  void WriteRecordedPositions();
+  // Writes a single word of data in the code stream.
+  // Used for inline tables, e.g., jump-tables.
+  void db(uint8_t data);
+  void dd(uint32_t data);
 
-  int pc_offset() const  { return static_cast<int>(pc_ - buffer_); }
-  int current_statement_position() const { return current_statement_position_; }
-  int current_position() const  { return current_position_; }
+  int pc_offset() const { return static_cast<int>(pc_ - buffer_); }
+
+  PositionsRecorder* positions_recorder() { return &positions_recorder_; }
 
   // Check if there is less than kGap bytes available in the buffer.
   // If this is the case, we need to grow the buffer before emitting
@@ -1148,21 +1337,16 @@ class Assembler : public Malloced {
     return static_cast<int>(reloc_info_writer.pos() - pc_);
   }
 
+  static bool IsNop(Address addr) { return *addr == 0x90; }
+
   // Avoid overflows for displacements etc.
   static const int kMaximalBufferSize = 512*MB;
   static const int kMinimalBufferSize = 4*KB;
 
- protected:
-  // void movsd(XMMRegister dst, const Operand& src);
-  // void movsd(const Operand& dst, XMMRegister src);
-
-  // void emit_sse_operand(XMMRegister reg, const Operand& adr);
-  // void emit_sse_operand(XMMRegister dst, XMMRegister src);
-
-
  private:
   byte* addr_at(int pos)  { return buffer_ + pos; }
   byte byte_at(int pos)  { return buffer_[pos]; }
+  void set_byte_at(int pos, byte value) { buffer_[pos] = value; }
   uint32_t long_at(int pos)  {
     return *reinterpret_cast<uint32_t*>(addr_at(pos));
   }
@@ -1184,8 +1368,9 @@ class Assembler : public Malloced {
   // the top bit of both register codes.
   // High bit of reg goes to REX.R, high bit of rm_reg goes to REX.B.
   // REX.W is set.
-  inline void emit_rex_64(Register reg, Register rm_reg);
   inline void emit_rex_64(XMMRegister reg, Register rm_reg);
+  inline void emit_rex_64(Register reg, XMMRegister rm_reg);
+  inline void emit_rex_64(Register reg, Register rm_reg);
 
   // Emits a REX prefix that encodes a 64-bit operand size and
   // the top bit of the destination, index, and base register codes.
@@ -1243,8 +1428,12 @@ class Assembler : public Malloced {
   inline void emit_optional_rex_32(XMMRegister reg, XMMRegister base);
 
   // As for emit_optional_rex_32(Register, Register), except that
-  // the registers are XMM registers.
+  // one of the registers is an XMM registers.
   inline void emit_optional_rex_32(XMMRegister reg, Register base);
+
+  // As for emit_optional_rex_32(Register, Register), except that
+  // one of the registers is an XMM registers.
+  inline void emit_optional_rex_32(Register reg, XMMRegister base);
 
   // As for emit_optional_rex_32(Register, const Operand&), except that
   // the register is an XMM register.
@@ -1333,7 +1522,6 @@ class Assembler : public Malloced {
   // labels
   // void print(Label* L);
   void bind_to(Label* L, int pos);
-  void link_to(Label* L, Label* appendix);
 
   // record reloc info for current pc_
   void RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data = 0);
@@ -1359,11 +1547,8 @@ class Assembler : public Malloced {
   // push-pop elimination
   byte* last_pc_;
 
-  // source position information
-  int current_statement_position_;
-  int current_position_;
-  int written_statement_position_;
-  int written_position_;
+  PositionsRecorder positions_recorder_;
+  friend class PositionsRecorder;
 };
 
 

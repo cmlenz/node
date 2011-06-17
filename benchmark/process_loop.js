@@ -1,14 +1,13 @@
-var path = require("path");
-libDir = path.join(path.dirname(__filename), "../lib");
-require.paths.unshift(libDir);
-process.mixin(require("sys"));
+var util = require("util"),
+    childProcess = require("child_process");
+
 function next (i) {
   if (i <= 0) return;
 
-  var child = process.createChildProcess("echo", ["hello"]);
+  var child = childProcess.spawn("echo", ["hello"]);
 
-  child.addListener("output", function (chunk) {
-    if (chunk) print(chunk);
+  child.stdout.addListener("data", function (chunk) {
+    util.print(chunk);
   });
 
   child.addListener("exit", function (code) {

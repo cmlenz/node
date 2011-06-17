@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,11 +30,9 @@
 
 #include "globals.h"
 #include "heap.h"
-#include "zone-inl.h"
 
 namespace v8 {
 namespace internal {
-
 
 // Interface for handle based allocation.
 
@@ -46,15 +44,25 @@ class Factory : public AllStatic {
       PretenureFlag pretenure = NOT_TENURED);
 
   // Allocate a new fixed array with non-existing entries (the hole).
-  static Handle<FixedArray> NewFixedArrayWithHoles(int size);
+  static Handle<FixedArray> NewFixedArrayWithHoles(
+      int size,
+      PretenureFlag pretenure = NOT_TENURED);
 
   static Handle<NumberDictionary> NewNumberDictionary(int at_least_space_for);
 
   static Handle<StringDictionary> NewStringDictionary(int at_least_space_for);
 
   static Handle<DescriptorArray> NewDescriptorArray(int number_of_descriptors);
+  static Handle<DeoptimizationInputData> NewDeoptimizationInputData(
+      int deopt_entry_count,
+      PretenureFlag pretenure);
+  static Handle<DeoptimizationOutputData> NewDeoptimizationOutputData(
+      int deopt_entry_count,
+      PretenureFlag pretenure);
 
   static Handle<String> LookupSymbol(Vector<const char> str);
+  static Handle<String> LookupAsciiSymbol(Vector<const char> str);
+  static Handle<String> LookupTwoByteSymbol(Vector<const uc16> str);
   static Handle<String> LookupAsciiSymbol(const char* str) {
     return LookupSymbol(CStrVector(str));
   }
@@ -92,12 +100,16 @@ class Factory : public AllStatic {
       Vector<const char> str,
       PretenureFlag pretenure = NOT_TENURED);
 
-  static Handle<String> NewStringFromTwoByte(Vector<const uc16> str,
+  static Handle<String> NewStringFromTwoByte(
+      Vector<const uc16> str,
       PretenureFlag pretenure = NOT_TENURED);
 
-  // Allocates and partially initializes a TwoByte String. The characters of
-  // the string are uninitialized. Currently used in regexp code only, where
-  // they are pretenured.
+  // Allocates and partially initializes an ASCII or TwoByte String. The
+  // characters of the string are uninitialized. Currently used in regexp code
+  // only, where they are pretenured.
+  static Handle<String> NewRawAsciiString(
+      int length,
+      PretenureFlag pretenure = NOT_TENURED);
   static Handle<String> NewRawTwoByteString(
       int length,
       PretenureFlag pretenure = NOT_TENURED);
@@ -165,6 +177,9 @@ class Factory : public AllStatic {
       void* external_pointer,
       PretenureFlag pretenure = NOT_TENURED);
 
+  static Handle<JSGlobalPropertyCell> NewJSGlobalPropertyCell(
+      Handle<Object> value);
+
   static Handle<Map> NewMap(InstanceType type, int instance_size);
 
   static Handle<JSObject> NewFunctionPrototype(Handle<JSFunction> function);
@@ -176,6 +191,12 @@ class Factory : public AllStatic {
   static Handle<Map> CopyMap(Handle<Map> map, int extra_inobject_props);
 
   static Handle<Map> CopyMapDropTransitions(Handle<Map> map);
+
+  static Handle<Map> GetFastElementsMap(Handle<Map> map);
+
+  static Handle<Map> GetSlowElementsMap(Handle<Map> map);
+
+  static Handle<Map> GetPixelArrayElementsMap(Handle<Map> map);
 
   static Handle<FixedArray> CopyFixedArray(Handle<FixedArray> array);
 
@@ -215,19 +236,29 @@ class Factory : public AllStatic {
   static Handle<JSFunction> NewFunction(Handle<String> name,
                                         Handle<Object> prototype);
 
+  static Handle<JSFunction> NewFunctionWithoutPrototype(Handle<String> name);
+
   static Handle<JSFunction> NewFunction(Handle<Object> super, bool is_global);
 
-  static Handle<JSFunction> NewFunctionFromBoilerplate(
-      Handle<JSFunction> boilerplate,
-      Handle<Context> context);
+  static Handle<JSFunction> BaseNewFunctionFromSharedFunctionInfo(
+      Handle<SharedFunctionInfo> function_info,
+      Handle<Map> function_map,
+      PretenureFlag pretenure);
+
+  static Handle<JSFunction> NewFunctionFromSharedFunctionInfo(
+      Handle<SharedFunctionInfo> function_info,
+      Handle<Context> context,
+      PretenureFlag pretenure = TENURED);
 
   static Handle<Code> NewCode(const CodeDesc& desc,
-                              ZoneScopeInfo* sinfo,
                               Code::Flags flags,
                               Handle<Object> self_reference);
 
   static Handle<Code> CopyCode(Handle<Code> code);
 
+  static Handle<Code> CopyCode(Handle<Code> code, Vector<byte> reloc_info);
+
+  static Handle<Object> ToObject(Handle<Object> object);
   static Handle<Object> ToObject(Handle<Object> object,
                                  Handle<Context> global_context);
 
@@ -268,12 +299,6 @@ class Factory : public AllStatic {
                                         Handle<Code> code,
                                         bool force_initial_map);
 
-  static Handle<JSFunction> NewFunctionBoilerplate(Handle<String> name,
-                                                   int number_of_literals,
-                                                   Handle<Code> code);
-
-  static Handle<JSFunction> NewFunctionBoilerplate(Handle<String> name);
-
   static Handle<JSFunction> NewFunction(Handle<Map> function_map,
       Handle<SharedFunctionInfo> shared, Handle<Object> prototype);
 
@@ -284,6 +309,9 @@ class Factory : public AllStatic {
                                                      Handle<JSObject> prototype,
                                                      Handle<Code> code,
                                                      bool force_initial_map);
+
+  static Handle<JSFunction> NewFunctionWithoutPrototype(Handle<String> name,
+                                                        Handle<Code> code);
 
   static Handle<DescriptorArray> CopyAppendProxyDescriptor(
       Handle<DescriptorArray> array,
@@ -314,7 +342,7 @@ class Factory : public AllStatic {
 
 #define ROOT_ACCESSOR(type, name, camel_name)                                  \
   static inline Handle<type> name() {                                          \
-    return Handle<type>(bit_cast<type**, Object**>(                            \
+    return Handle<type>(BitCast<type**>(                                       \
         &Heap::roots_[Heap::k##camel_name##RootIndex]));                       \
   }
   ROOT_LIST(ROOT_ACCESSOR)
@@ -322,7 +350,7 @@ class Factory : public AllStatic {
 
 #define SYMBOL_ACCESSOR(name, str) \
   static inline Handle<String> name() {                                        \
-    return Handle<String>(bit_cast<String**, Object**>(                        \
+    return Handle<String>(BitCast<String**>(                                   \
         &Heap::roots_[Heap::k##name##RootIndex]));                             \
   }
   SYMBOL_LIST(SYMBOL_ACCESSOR)
@@ -332,7 +360,21 @@ class Factory : public AllStatic {
     return Handle<String>(&Heap::hidden_symbol_);
   }
 
+  static Handle<SharedFunctionInfo> NewSharedFunctionInfo(
+      Handle<String> name,
+      int number_of_literals,
+      Handle<Code> code,
+      Handle<SerializedScopeInfo> scope_info);
   static Handle<SharedFunctionInfo> NewSharedFunctionInfo(Handle<String> name);
+
+  static Handle<JSMessageObject> NewJSMessageObject(
+      Handle<String> type,
+      Handle<JSArray> arguments,
+      int start_position,
+      int end_position,
+      Handle<Object> script,
+      Handle<Object> stack_trace,
+      Handle<Object> stack_frames);
 
   static Handle<NumberDictionary> DictionaryAtNumberPut(
       Handle<NumberDictionary>,
@@ -368,13 +410,12 @@ class Factory : public AllStatic {
   static Handle<JSFunction> NewFunctionHelper(Handle<String> name,
                                               Handle<Object> prototype);
 
+  static Handle<JSFunction> NewFunctionWithoutPrototypeHelper(
+      Handle<String> name);
+
   static Handle<DescriptorArray> CopyAppendCallbackDescriptors(
       Handle<DescriptorArray> array,
       Handle<Object> descriptors);
-
-  static Handle<JSFunction> BaseNewFunctionFromBoilerplate(
-      Handle<JSFunction> boilerplate,
-      Handle<Map> function_map);
 
   // Create a new map cache.
   static Handle<MapCache> NewMapCache(int at_least_space_for);

@@ -84,15 +84,14 @@ assertEquals(result[4], 'D');
 assertEquals(result[5], 'E');
 assertEquals(result[6], 'F');
 
-// Some tests from the Mozilla tests, where our behavior differs from
+// Some tests from the Mozilla tests, where our behavior used to differ from
 // SpiderMonkey.
 // From ecma_3/RegExp/regress-334158.js
 assertTrue(/\ca/.test( "\x01" ));
 assertFalse(/\ca/.test( "\\ca" ));
-// Passes in KJS, fails in IrregularExpressions.
-// See http://code.google.com/p/v8/issues/detail?id=152
-//assertTrue(/\c[a/]/.test( "\x1ba/]" ));
-
+assertFalse(/\ca/.test( "ca" ));
+assertTrue(/\c[a/]/.test( "\\ca" ));
+assertTrue(/\c[a/]/.test( "\\c/" ));
 
 // Test \c in character class
 re = /^[\cM]$/;
@@ -104,11 +103,29 @@ assertFalse(re.test("\x03"));  // I.e., read as \cc
 
 re = /^[\c]]$/;
 assertTrue(re.test("c]"));
-assertFalse(re.test("\\]"));
+assertTrue(re.test("\\]"));
 assertFalse(re.test("\x1d"));  // ']' & 0x1f
-assertFalse(re.test("\\]"));
 assertFalse(re.test("\x03]"));  // I.e., read as \cc
 
+re = /^[\c1]$/;  // Digit control characters are masked in character classes.
+assertTrue(re.test("\x11"));
+assertFalse(re.test("\\"));
+assertFalse(re.test("c"));
+assertFalse(re.test("1"));
+
+re = /^[\c_]$/;  // Underscore control character is masked in character classes.
+assertTrue(re.test("\x1f"));
+assertFalse(re.test("\\"));
+assertFalse(re.test("c"));
+assertFalse(re.test("_"));
+
+re = /^[\c$]$/;  // Other characters are interpreted literally.
+assertFalse(re.test("\x04"));
+assertTrue(re.test("\\"));
+assertTrue(re.test("c"));
+assertTrue(re.test("$"));
+
+assertTrue(/^[Z-\c-e]*$/.test("Z[\\cde"));
 
 // Test that we handle \s and \S correctly inside some bizarre
 // character classes.
@@ -201,6 +218,17 @@ assertFalse(re.test('\t'));
 assertFalse(re.test('\n'));
 assertFalse(re.test('a'));
 assertFalse(re.test('Z'));
+
+// First - is treated as range operator, second as literal minus.
+// This follows the specification in parsing, but doesn't throw on
+// the \s at the beginning of the range.
+re = /[\s-0-9]/;
+assertTrue(re.test(' '));
+assertTrue(re.test('\xA0'));
+assertTrue(re.test('-'));
+assertTrue(re.test('0'));
+assertTrue(re.test('9'));
+assertFalse(re.test('1'));
 
 // Test beginning and end of line assertions with or without the
 // multiline flag.
@@ -388,3 +416,277 @@ try {
   assertTrue(String(e).indexOf("Stack overflow") >= 0, "overflow");
 }
 
+
+// Test that compile works on modified objects
+var re = /re+/;
+assertEquals("re+", re.source);
+assertFalse(re.global);
+assertFalse(re.ignoreCase);
+assertFalse(re.multiline);
+assertEquals(0, re.lastIndex);
+
+re.compile("ro+", "gim");
+assertEquals("ro+", re.source);
+assertTrue(re.global);
+assertTrue(re.ignoreCase);
+assertTrue(re.multiline);
+assertEquals(0, re.lastIndex);
+
+re.lastIndex = 42;
+re.someOtherProperty = 42;
+re.someDeletableProperty = 42;
+re[37] = 37;  
+re[42] = 42;  
+
+re.compile("ra+", "i");
+assertEquals("ra+", re.source);
+assertFalse(re.global);
+assertTrue(re.ignoreCase);
+assertFalse(re.multiline);
+assertEquals(0, re.lastIndex);
+
+assertEquals(42, re.someOtherProperty);
+assertEquals(42, re.someDeletableProperty);
+assertEquals(37, re[37]);
+assertEquals(42, re[42]);
+
+re.lastIndex = -1;
+re.someOtherProperty = 37;
+re[42] = 37;
+assertTrue(delete re[37]);
+assertTrue(delete re.someDeletableProperty);
+re.compile("ri+", "gm");
+
+assertEquals("ri+", re.source);
+assertTrue(re.global);
+assertFalse(re.ignoreCase);
+assertTrue(re.multiline);
+assertEquals(0, re.lastIndex);
+assertEquals(37, re.someOtherProperty);
+assertEquals(37, re[42]);
+
+// Test boundary-checks.
+function assertRegExpTest(re, input, test) { 
+  assertEquals(test, re.test(input), "test:" + re + ":" + input);
+}
+
+assertRegExpTest(/b\b/, "b", true);
+assertRegExpTest(/b\b$/, "b", true);
+assertRegExpTest(/\bb/, "b", true);
+assertRegExpTest(/^\bb/, "b", true);
+assertRegExpTest(/,\b/, ",", false);
+assertRegExpTest(/,\b$/, ",", false);
+assertRegExpTest(/\b,/, ",", false);
+assertRegExpTest(/^\b,/, ",", false);
+
+assertRegExpTest(/b\B/, "b", false);
+assertRegExpTest(/b\B$/, "b", false);
+assertRegExpTest(/\Bb/, "b", false);
+assertRegExpTest(/^\Bb/, "b", false);
+assertRegExpTest(/,\B/, ",", true);
+assertRegExpTest(/,\B$/, ",", true);
+assertRegExpTest(/\B,/, ",", true);
+assertRegExpTest(/^\B,/, ",", true);
+
+assertRegExpTest(/b\b/, "b,", true);
+assertRegExpTest(/b\b/, "ba", false);
+assertRegExpTest(/b\B/, "b,", false);
+assertRegExpTest(/b\B/, "ba", true);
+
+assertRegExpTest(/b\Bb/, "bb", true);
+assertRegExpTest(/b\bb/, "bb", false);
+
+assertRegExpTest(/b\b[,b]/, "bb", false);
+assertRegExpTest(/b\B[,b]/, "bb", true);
+assertRegExpTest(/b\b[,b]/, "b,", true);
+assertRegExpTest(/b\B[,b]/, "b,", false);
+
+assertRegExpTest(/[,b]\bb/, "bb", false);
+assertRegExpTest(/[,b]\Bb/, "bb", true);
+assertRegExpTest(/[,b]\bb/, ",b", true);
+assertRegExpTest(/[,b]\Bb/, ",b", false);
+
+assertRegExpTest(/[,b]\b[,b]/, "bb", false);
+assertRegExpTest(/[,b]\B[,b]/, "bb", true);
+assertRegExpTest(/[,b]\b[,b]/, ",b", true);
+assertRegExpTest(/[,b]\B[,b]/, ",b", false);
+assertRegExpTest(/[,b]\b[,b]/, "b,", true);
+assertRegExpTest(/[,b]\B[,b]/, "b,", false);
+
+// Test that caching of result doesn't share result objects.
+// More iterations increases the chance of hitting a GC.
+for (var i = 0; i < 100; i++) {
+  var re = /x(y)z/;
+  var res = re.exec("axyzb");
+  assertTrue(!!res);
+  assertEquals(2, res.length);
+  assertEquals("xyz", res[0]);
+  assertEquals("y", res[1]);
+  assertEquals(1, res.index);
+  assertEquals("axyzb", res.input);
+  assertEquals(undefined, res.foobar);
+  
+  res.foobar = "Arglebargle";
+  res[3] = "Glopglyf";
+  assertEquals("Arglebargle", res.foobar);
+}
+
+// Test that we perform the spec required conversions in the correct order.
+var log;
+var string = "the string";
+var fakeLastIndex = { 
+      valueOf: function() { 
+        log.push("li");
+        return 0;
+      } 
+    };
+var fakeString = { 
+      toString: function() {
+        log.push("ts");
+        return string;
+      }, 
+      length: 0 
+    };
+
+var re = /str/;
+log = [];
+re.lastIndex = fakeLastIndex;
+var result = re.exec(fakeString);
+assertEquals(["str"], result);
+assertEquals(["ts", "li"], log);
+
+// Again, to check if caching interferes.
+log = [];
+re.lastIndex = fakeLastIndex;
+result = re.exec(fakeString);
+assertEquals(["str"], result);
+assertEquals(["ts", "li"], log);
+
+// And one more time, just to be certain.
+log = [];
+re.lastIndex = fakeLastIndex;
+result = re.exec(fakeString);
+assertEquals(["str"], result);
+assertEquals(["ts", "li"], log);
+
+// Now with a global regexp, where lastIndex is actually used.
+re = /str/g;
+log = [];
+re.lastIndex = fakeLastIndex;
+var result = re.exec(fakeString);
+assertEquals(["str"], result);
+assertEquals(["ts", "li"], log);
+
+// Again, to check if caching interferes.
+log = [];
+re.lastIndex = fakeLastIndex;
+result = re.exec(fakeString);
+assertEquals(["str"], result);
+assertEquals(["ts", "li"], log);
+
+// And one more time, just to be certain.
+log = [];
+re.lastIndex = fakeLastIndex;
+result = re.exec(fakeString);
+assertEquals(["str"], result);
+assertEquals(["ts", "li"], log);
+
+
+// Check that properties of RegExp have the correct permissions.
+var re = /x/g;
+var desc = Object.getOwnPropertyDescriptor(re, "global");
+assertEquals(true, desc.value);
+assertEquals(false, desc.configurable);
+assertEquals(false, desc.enumerable);
+assertEquals(false, desc.writable);
+
+desc = Object.getOwnPropertyDescriptor(re, "multiline");
+assertEquals(false, desc.value);
+assertEquals(false, desc.configurable);
+assertEquals(false, desc.enumerable);
+assertEquals(false, desc.writable);
+
+desc = Object.getOwnPropertyDescriptor(re, "ignoreCase");
+assertEquals(false, desc.value);
+assertEquals(false, desc.configurable);
+assertEquals(false, desc.enumerable);
+assertEquals(false, desc.writable);
+
+desc = Object.getOwnPropertyDescriptor(re, "lastIndex");
+assertEquals(0, desc.value);
+assertEquals(false, desc.configurable);
+assertEquals(false, desc.enumerable);
+assertEquals(true, desc.writable);
+
+
+// Check that end-anchored regexps are optimized correctly.
+var re = /(?:a|bc)g$/;
+assertTrue(re.test("ag"));
+assertTrue(re.test("bcg"));
+assertTrue(re.test("abcg"));
+assertTrue(re.test("zimbag"));
+assertTrue(re.test("zimbcg"));
+
+assertFalse(re.test("g"));
+assertFalse(re.test(""));
+
+// Global regexp (non-zero start).
+var re = /(?:a|bc)g$/g;
+assertTrue(re.test("ag"));
+re.lastIndex = 1;  // Near start of string.
+assertTrue(re.test("zimbag"));
+re.lastIndex = 6;  // At end of string.
+assertFalse(re.test("zimbag"));
+re.lastIndex = 5;  // Near end of string.
+assertFalse(re.test("zimbag"));
+re.lastIndex = 4;
+assertTrue(re.test("zimbag"));
+
+// Anchored at both ends.
+var re = /^(?:a|bc)g$/g;
+assertTrue(re.test("ag"));
+re.lastIndex = 1;
+assertFalse(re.test("ag"));
+re.lastIndex = 1;
+assertFalse(re.test("zag"));
+
+// Long max_length of RegExp.
+var re = /VeryLongRegExp!{1,1000}$/;
+assertTrue(re.test("BahoolaVeryLongRegExp!!!!!!"));
+assertFalse(re.test("VeryLongRegExp"));
+assertFalse(re.test("!"));
+
+// End anchor inside disjunction.
+var re = /(?:a$|bc$)/;
+assertTrue(re.test("a"));
+assertTrue(re.test("bc"));
+assertTrue(re.test("abc"));
+assertTrue(re.test("zimzamzumba"));
+assertTrue(re.test("zimzamzumbc"));
+assertFalse(re.test("c"));
+assertFalse(re.test(""));
+
+// Only partially anchored.
+var re = /(?:a|bc$)/;
+assertTrue(re.test("a"));
+assertTrue(re.test("bc"));
+assertEquals(["a"], re.exec("abc"));
+assertEquals(4, re.exec("zimzamzumba").index);
+assertEquals(["bc"], re.exec("zimzomzumbc"));
+assertFalse(re.test("c"));
+assertFalse(re.test(""));
+
+// Valid syntax in ES5.
+re = RegExp("(?:x)*");
+re = RegExp("(x)*");
+
+// Syntax extension relative to ES5, for matching JSC (and ES3).
+// Shouldn't throw.
+re = RegExp("(?=x)*");
+re = RegExp("(?!x)*");
+
+// Should throw. Shouldn't hit asserts in debug mode.
+assertThrows("RegExp('(*)')");
+assertThrows("RegExp('(?:*)')");
+assertThrows("RegExp('(?=*)')");
+assertThrows("RegExp('(?!*)')");

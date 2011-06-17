@@ -1,36 +1,8 @@
-This license applies to all parts of Node that are not externally
-maintained libraries.  The externally maintained libraries used by Node
-are:
-
-  - v8, located under deps/v8, which is copyrighted by the Google, Inc.
-    v8 has an MIT license. 
-
-  - libev, located under deps/libev, and libeio, located at deps/libeio. 
-    This code is copyrighted by Marc Alexander Lehmann. Both are dually
-    licensed under MIT and GPL2.
-
-  - JSMin JavaScript minifier, located at tools/jsmin.py.  This code is
-    copyrighted by Douglas Crockford and Baruch Even and has an MIT license.
-
-  - parseUri, a URI parser, is located in lib/http.js. This is just a small
-    snippit. It is copyrighted 2007 by Steven Levithan and released under an
-    MIT license.
-
-  - WAF build system, located at tools/waf. Copyrighted Thomas Nagy.
-    Released under an MIT license.
-
-  - The SCONS build system, located at tools/scons. Copyrighted by the SCONS
-    Foundation.  Released under an MIT license.
-
-  - UDNS, an asynchronous DNS client, located at deps/udns. Copyrighted by
-    Michael Tokarev <mjt@corpit.ru>. Released under the GNU Lesser General
-    Public License version 2.1.
-
-Other external libraries are my own and all use the same license as Node.
-
 Node's license follows:
 
-Copyright 2009, Ryan Lienhart Dahl. All rights reserved.
+====
+
+Copyright Joyent, Inc. and other Node contributors. All rights reserved.
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to
 deal in the Software without restriction, including without limitation the
@@ -47,4 +19,53 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-IN THE SOFTWARE. 
+IN THE SOFTWARE.
+
+====
+
+This license applies to all parts of Node that are not externally
+maintained libraries.
+
+The externally maintained libraries used by Node are:
+
+  - v8, located at deps/v8. v8 is copyright Google, Inc, and released
+    under a BSD license.
+
+  - libev, located at deps/libev, and libeio, located at deps/libeio. libev
+    and libeio are copyright Marc Alexander Lehmann, and dual-licensed
+    under the MIT license and GPL2.
+
+  - WAF build system, located at tools/waf. WAF is copyright Thomas Nagy,
+    and released under the MIT license.
+
+  - The SCONS build system, located at tools/scons. SCONS is copyright
+    the SCONS Foundation and released under the MIT license.
+
+  - C-Ares, an asynchronous DNS client, located at deps/c-ares. C-Ares is
+    copyright the Massachusetts Institute of Technology, authored by
+    Greg Hudson, Daniel Stenberg and others, and released under the MIT
+    license.
+
+  - Node, optionally, dynamically links to OpenSSL, cryptographic software
+    written by Eric Young (eay@cryptsoft.com) to provide SSL/TLS encryption.
+    OpenSSL is copyright The OpenSSL Project and released under the OpenSSL
+    license. OpenSSL is not included in the Node distribution.
+    See http://openssl.org/ for more information.
+
+  - tools/doctool/markdown.js is copyright 2009-2010 Dominic Baggott and Ash
+    Berli and released under the MIT license.
+
+  - HTTP Parser, located at deps/http_parser, is a small C library
+    copyright Ryan Lienhart Dahl and released under the MIT license.
+
+  - src/platform_darwin_proctitle.cc, has code taken from the Chromium
+    project copyright Google Inc. and released under a BSD license.
+
+  - tools/closure_linter is copyright The Closure Linter Authors and
+    Google Inc. and released under the Apache License, version 2.0.
+
+  - tools/cpplint.py is copyright Google Inc. and released under a
+    BSD license.
+
+  - lib/buffer_ieee754.js is copyright 2008 Fair Oaks Labs, Inc. and released
+    under the New BSD license.

@@ -39,10 +39,10 @@ namespace internal {
 // Handles are only valid within a HandleScope.
 // When a handle is created for an object a cell is allocated in the heap.
 
-template<class T>
+template<typename T>
 class Handle {
  public:
-  INLINE(Handle(T** location)) { location_ = location; }
+  INLINE(explicit Handle(T** location)) { location_ = location; }
   INLINE(explicit Handle(T* obj));
 
   INLINE(Handle()) : location_(NULL) {}
@@ -107,12 +107,12 @@ class Handle {
 // for which the handle scope has been deleted is undefined.
 class HandleScope {
  public:
-  HandleScope() : previous_(current_) {
-    current_.extensions = 0;
+  HandleScope() : prev_next_(current_.next), prev_limit_(current_.limit) {
+    current_.level++;
   }
 
   ~HandleScope() {
-    Leave(&previous_);
+    CloseScope();
   }
 
   // Counts the number of allocated handles.
@@ -136,9 +136,29 @@ class HandleScope {
   // Deallocates any extensions used by the current scope.
   static void DeleteExtensions();
 
-  static Address current_extensions_address();
   static Address current_next_address();
   static Address current_limit_address();
+  static Address current_level_address();
+
+  // Closes the HandleScope (invalidating all handles
+  // created in the scope of the HandleScope) and returns
+  // a Handle backed by the parent scope holding the
+  // value of the argument handle.
+  template <typename T>
+  Handle<T> CloseAndEscape(Handle<T> handle_value) {
+    T* value = *handle_value;
+    // Throw away all handles in the current scope.
+    CloseScope();
+    // Allocate one handle in the parent scope.
+    ASSERT(current_.level > 0);
+    Handle<T> result(CreateHandle<T>(value));
+    // Reinitialize the current scope (so that it's ready
+    // to be used or closed again).
+    prev_next_ = current_.next;
+    prev_limit_ = current_.limit;
+    current_.level++;
+    return result;
+  }
 
  private:
   // Prevent heap allocation or illegal handle scopes.
@@ -147,28 +167,23 @@ class HandleScope {
   void* operator new(size_t size);
   void operator delete(void* size_t);
 
-  static v8::ImplementationUtilities::HandleScopeData current_;
-  const v8::ImplementationUtilities::HandleScopeData previous_;
-
-  // Pushes a fresh handle scope to be used when allocating new handles.
-  static void Enter(
-      v8::ImplementationUtilities::HandleScopeData* previous) {
-    *previous = current_;
-    current_.extensions = 0;
-  }
-
-  // Re-establishes the previous scope state. Should be called only
-  // once, and only for the current scope.
-  static void Leave(
-      const v8::ImplementationUtilities::HandleScopeData* previous) {
-    if (current_.extensions > 0) {
+  inline void CloseScope() {
+    current_.next = prev_next_;
+    current_.level--;
+    if (current_.limit != prev_limit_) {
+      current_.limit = prev_limit_;
       DeleteExtensions();
     }
-    current_ = *previous;
 #ifdef DEBUG
-    ZapRange(current_.next, current_.limit);
+    ZapRange(prev_next_, prev_limit_);
 #endif
   }
+
+  static v8::ImplementationUtilities::HandleScopeData current_;
+  // Holds values on entry. The prev_next_ value is never NULL
+  // on_entry, but is set to NULL when this scope is closed.
+  Object** prev_next_;
+  Object** prev_limit_;
 
   // Extend the handle scope making room for more handles.
   static internal::Object** Extend();
@@ -193,39 +208,69 @@ void NormalizeProperties(Handle<JSObject> object,
 void NormalizeElements(Handle<JSObject> object);
 void TransformToFastProperties(Handle<JSObject> object,
                                int unused_property_fields);
+void NumberDictionarySet(Handle<NumberDictionary> dictionary,
+                         uint32_t index,
+                         Handle<Object> value,
+                         PropertyDetails details);
+
+// Flattens a string.
 void FlattenString(Handle<String> str);
+
+// Flattens a string and returns the underlying external or sequential
+// string.
+Handle<String> FlattenGetString(Handle<String> str);
 
 Handle<Object> SetProperty(Handle<JSObject> object,
                            Handle<String> key,
                            Handle<Object> value,
-                           PropertyAttributes attributes);
+                           PropertyAttributes attributes,
+                           StrictModeFlag strict);
 
 Handle<Object> SetProperty(Handle<Object> object,
                            Handle<Object> key,
                            Handle<Object> value,
-                           PropertyAttributes attributes);
+                           PropertyAttributes attributes,
+                           StrictModeFlag strict);
 
 Handle<Object> ForceSetProperty(Handle<JSObject> object,
                                 Handle<Object> key,
                                 Handle<Object> value,
                                 PropertyAttributes attributes);
 
+Handle<Object> SetNormalizedProperty(Handle<JSObject> object,
+                                     Handle<String> key,
+                                     Handle<Object> value,
+                                     PropertyDetails details);
+
 Handle<Object> ForceDeleteProperty(Handle<JSObject> object,
                                    Handle<Object> key);
 
-Handle<Object> IgnoreAttributesAndSetLocalProperty(Handle<JSObject> object,
-                                                   Handle<String> key,
-                                                   Handle<Object> value,
+Handle<Object> SetLocalPropertyIgnoreAttributes(
+    Handle<JSObject> object,
+    Handle<String> key,
+    Handle<Object> value,
     PropertyAttributes attributes);
+
+// Used to set local properties on the object we totally control
+// and which therefore has no accessors and alikes.
+void SetLocalPropertyNoThrow(Handle<JSObject> object,
+                             Handle<String> key,
+                             Handle<Object> value,
+                             PropertyAttributes attributes = NONE);
 
 Handle<Object> SetPropertyWithInterceptor(Handle<JSObject> object,
                                           Handle<String> key,
                                           Handle<Object> value,
-                                          PropertyAttributes attributes);
+                                          PropertyAttributes attributes,
+                                          StrictModeFlag strict);
 
 Handle<Object> SetElement(Handle<JSObject> object,
                           uint32_t index,
                           Handle<Object> value);
+
+Handle<Object> SetOwnElement(Handle<JSObject> object,
+                             uint32_t index,
+                             Handle<Object> value);
 
 Handle<Object> GetProperty(Handle<JSObject> obj,
                            const char* name);
@@ -233,12 +278,17 @@ Handle<Object> GetProperty(Handle<JSObject> obj,
 Handle<Object> GetProperty(Handle<Object> obj,
                            Handle<Object> key);
 
+Handle<Object> GetElement(Handle<Object> obj,
+                          uint32_t index);
+
 Handle<Object> GetPropertyWithInterceptor(Handle<JSObject> receiver,
                                           Handle<JSObject> holder,
                                           Handle<String> name,
                                           PropertyAttributes* attributes);
 
 Handle<Object> GetPrototype(Handle<Object> obj);
+
+Handle<Object> SetPrototype(Handle<JSObject> obj, Handle<Object> value);
 
 // Return the object's hidden properties object. If the object has no hidden
 // properties and create_if_needed is true, then a new hidden property object
@@ -252,6 +302,8 @@ Handle<Object> LookupSingleCharacterStringFromCode(uint32_t index);
 
 Handle<JSObject> Copy(Handle<JSObject> obj);
 
+Handle<Object> SetAccessor(Handle<JSObject> obj, Handle<AccessorInfo> info);
+
 Handle<FixedArray> AddKeysFromJSArray(Handle<FixedArray>,
                                       Handle<JSArray> array);
 
@@ -261,7 +313,14 @@ Handle<JSValue> GetScriptWrapper(Handle<Script> script);
 
 // Script line number computations.
 void InitScriptLineEnds(Handle<Script> script);
+// For string calculates an array of line end positions. If the string
+// does not end with a new line character, this character may optionally be
+// imagined.
+Handle<FixedArray> CalculateLineEnds(Handle<String> string,
+                                     bool with_imaginary_last_new_line);
 int GetScriptLineNumber(Handle<Script> script, int code_position);
+// The safe version does not make heap allocations but may work much slower.
+int GetScriptLineNumberSafe(Handle<Script> script, int code_position);
 
 // Computes the enumerable keys from interceptors. Used for debug mirrors and
 // by GetKeysInFixedArrayFor below.
@@ -285,7 +344,10 @@ Handle<FixedArray> GetEnumPropertyKeys(Handle<JSObject> object,
 Handle<FixedArray> UnionOfKeys(Handle<FixedArray> first,
                                Handle<FixedArray> second);
 
-Handle<String> SubString(Handle<String> str, int start, int end);
+Handle<String> SubString(Handle<String> str,
+                         int start,
+                         int end,
+                         PretenureFlag pretenure = NOT_TENURED);
 
 
 // Sets the expected number of properties for the function's instances.
@@ -296,8 +358,6 @@ void SetPrototypeProperty(Handle<JSFunction> func, Handle<JSObject> value);
 
 // Sets the expected number of properties based on estimate from compiler.
 void SetExpectedNofPropertiesFromEstimate(Handle<SharedFunctionInfo> shared,
-                                          int estimate);
-void SetExpectedNofPropertiesFromEstimate(Handle<JSFunction> func,
                                           int estimate);
 
 
@@ -313,22 +373,19 @@ Handle<Object> SetPrototype(Handle<JSFunction> function,
 // false if the compilation resulted in a stack overflow.
 enum ClearExceptionFlag { KEEP_EXCEPTION, CLEAR_EXCEPTION };
 
+bool EnsureCompiled(Handle<SharedFunctionInfo> shared,
+                    ClearExceptionFlag flag);
+
 bool CompileLazyShared(Handle<SharedFunctionInfo> shared,
-                       ClearExceptionFlag flag,
-                       int loop_nesting);
+                       ClearExceptionFlag flag);
 
 bool CompileLazy(Handle<JSFunction> function, ClearExceptionFlag flag);
+
 bool CompileLazyInLoop(Handle<JSFunction> function, ClearExceptionFlag flag);
 
-// Returns the lazy compilation stub for argc arguments.
-Handle<Code> ComputeLazyCompile(int argc);
-
-// These deal with lazily loaded properties.
-void SetupLazy(Handle<JSObject> obj,
-               int index,
-               Handle<Context> compile_context,
-               Handle<Context> function_context);
-void LoadLazy(Handle<JSObject> obj, bool* pending_exception);
+bool CompileOptimized(Handle<JSFunction> function,
+                      int osr_ast_id,
+                      ClearExceptionFlag flag);
 
 class NoHandleAllocation BASE_EMBEDDED {
  public:
@@ -339,7 +396,7 @@ class NoHandleAllocation BASE_EMBEDDED {
   inline NoHandleAllocation();
   inline ~NoHandleAllocation();
  private:
-  int extensions_;
+  int level_;
 #endif
 };
 

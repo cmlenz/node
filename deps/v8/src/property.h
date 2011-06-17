@@ -45,10 +45,12 @@ class Descriptor BASE_EMBEDDED {
     return Smi::cast(value)->value();
   }
 
-  Object* KeyToSymbol() {
+  MUST_USE_RESULT MaybeObject* KeyToSymbol() {
     if (!StringShape(key_).IsSymbol()) {
-      Object* result = Heap::LookupSymbol(key_);
-      if (result->IsFailure()) return result;
+      Object* result;
+      { MaybeObject* maybe_result = Heap::LookupSymbol(key_);
+        if (!maybe_result->ToObject(&result)) return maybe_result;
+      }
       key_ = String::cast(result);
     }
     return key_;
@@ -58,8 +60,8 @@ class Descriptor BASE_EMBEDDED {
   Object* GetValue() { return value_; }
   PropertyDetails GetDetails() { return details_; }
 
-#ifdef DEBUG
-  void Print();
+#ifdef OBJECT_PRINT
+  void Print(FILE* out);
 #endif
 
   void SetEnumerationIndex(int index) {
@@ -115,8 +117,8 @@ class MapTransitionDescriptor: public Descriptor {
 // the same CONSTANT_FUNCTION field.
 class ConstTransitionDescriptor: public Descriptor {
  public:
-  explicit ConstTransitionDescriptor(String* key)
-      : Descriptor(key, Smi::FromInt(0), NONE, CONSTANT_TRANSITION) { }
+  explicit ConstTransitionDescriptor(String* key, Map* map)
+      : Descriptor(key, map, NONE, CONSTANT_TRANSITION) { }
 };
 
 
@@ -201,23 +203,17 @@ class LookupResult BASE_EMBEDDED {
   }
 
   JSObject* holder() {
-    ASSERT(IsValid());
+    ASSERT(IsFound());
     return holder_;
   }
 
   PropertyType type() {
-    ASSERT(IsValid());
+    ASSERT(IsFound());
     return details_.type();
   }
 
-  bool IsTransitionType() {
-    PropertyType t = type();
-    if (t == MAP_TRANSITION || t == CONSTANT_TRANSITION) return true;
-    return false;
-  }
-
   PropertyAttributes GetAttributes() {
-    ASSERT(IsValid());
+    ASSERT(IsFound());
     return details_.attributes();
   }
 
@@ -229,27 +225,21 @@ class LookupResult BASE_EMBEDDED {
   bool IsDontDelete() { return details_.IsDontDelete(); }
   bool IsDontEnum() { return details_.IsDontEnum(); }
   bool IsDeleted() { return details_.IsDeleted(); }
+  bool IsFound() { return lookup_type_ != NOT_FOUND; }
 
-  bool IsValid() { return  lookup_type_ != NOT_FOUND; }
-  bool IsNotFound() { return lookup_type_ == NOT_FOUND; }
-
-  // Tells whether the result is a property.
-  // Excluding transitions and the null descriptor.
+  // Is the result is a property excluding transitions and the null
+  // descriptor?
   bool IsProperty() {
-    return IsValid() && type() < FIRST_PHANTOM_PROPERTY_TYPE;
+    return IsFound() && (type() < FIRST_PHANTOM_PROPERTY_TYPE);
+  }
+
+  // Is the result a property or a transition?
+  bool IsPropertyOrTransition() {
+    return IsFound() && (type() != NULL_DESCRIPTOR);
   }
 
   bool IsCacheable() { return cacheable_; }
   void DisallowCaching() { cacheable_ = false; }
-
-  // Tells whether the value needs to be loaded.
-  bool IsLoaded() {
-    if (lookup_type_ == DESCRIPTOR_TYPE || lookup_type_ == DICTIONARY_TYPE) {
-      Object* target = GetLazyValue();
-      return !target->IsJSObject() || JSObject::cast(target)->IsLoaded();
-    }
-    return true;
-  }
 
   Object* GetLazyValue() {
     switch (type()) {
@@ -272,14 +262,28 @@ class LookupResult BASE_EMBEDDED {
 
   Map* GetTransitionMap() {
     ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
-    ASSERT(type() == MAP_TRANSITION);
+    ASSERT(type() == MAP_TRANSITION || type() == CONSTANT_TRANSITION);
     return Map::cast(GetValue());
+  }
+
+  Map* GetTransitionMapFromMap(Map* map) {
+    ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
+    ASSERT(type() == MAP_TRANSITION);
+    return Map::cast(map->instance_descriptors()->GetValue(number_));
   }
 
   int GetFieldIndex() {
     ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
     ASSERT(type() == FIELD);
     return Descriptor::IndexFromValue(GetValue());
+  }
+
+  int GetLocalFieldIndexFromMap(Map* map) {
+    ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
+    ASSERT(type() == FIELD);
+    return Descriptor::IndexFromValue(
+        map->instance_descriptors()->GetValue(number_)) -
+        map->inobject_properties();
   }
 
   int GetDictionaryEntry() {
@@ -292,6 +296,12 @@ class LookupResult BASE_EMBEDDED {
     return JSFunction::cast(GetValue());
   }
 
+  JSFunction* GetConstantFunctionFromMap(Map* map) {
+    ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
+    ASSERT(type() == CONSTANT_FUNCTION);
+    return JSFunction::cast(map->instance_descriptors()->GetValue(number_));
+  }
+
   Object* GetCallbackObject() {
     if (lookup_type_ == CONSTANT_TYPE) {
       // For now we only have the __proto__ as constant type.
@@ -300,8 +310,8 @@ class LookupResult BASE_EMBEDDED {
     return GetValue();
   }
 
-#ifdef DEBUG
-  void Print();
+#ifdef OBJECT_PRINT
+  void Print(FILE* out);
 #endif
 
   Object* GetValue() {

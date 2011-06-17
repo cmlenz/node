@@ -52,6 +52,7 @@
 #include "v8.h"
 
 #include "platform.h"
+#include "vm-state-inl.h"
 
 
 namespace v8 {
@@ -83,6 +84,12 @@ void OS::Setup() {
 }
 
 
+void OS::ReleaseStore(volatile AtomicWord* ptr, AtomicWord value) {
+  __asm__ __volatile__("" : : : "memory");
+  *ptr = value;
+}
+
+
 uint64_t OS::CpuFeaturesImpliedByPlatform() {
   return 0;  // OpenBSD runs on anything.
 }
@@ -91,6 +98,24 @@ uint64_t OS::CpuFeaturesImpliedByPlatform() {
 int OS::ActivationFrameAlignment() {
   // 16 byte alignment on OpenBSD
   return 16;
+}
+
+
+const char* OS::LocalTimezone(double time) {
+  if (isnan(time)) return "";
+  time_t tv = static_cast<time_t>(floor(time/msPerSecond));
+  struct tm* t = localtime(&tv);
+  if (NULL == t) return "";
+  return t->tm_zone;
+}
+
+
+double OS::LocalTimeOffset() {
+  time_t tv = time(NULL);
+  struct tm* t = localtime(&tv);
+  // tm_gmtoff includes any daylight savings offset, so subtract it.
+  return static_cast<double>(t->tm_gmtoff * msPerSecond -
+                             (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
 }
 
 
@@ -172,8 +197,10 @@ void OS::Abort() {
 
 
 void OS::DebugBreak() {
-#if defined(__arm__) || defined(__thumb__)
+#if (defined(__arm__) || defined(__thumb__))
+# if defined(CAN_USE_ARMV5_INSTRUCTIONS)
   asm("bkpt 0");
+# endif
 #else
   asm("int $3");
 #endif
@@ -186,11 +213,25 @@ class PosixMemoryMappedFile : public OS::MemoryMappedFile {
     : file_(file), memory_(memory), size_(size) { }
   virtual ~PosixMemoryMappedFile();
   virtual void* memory() { return memory_; }
+  virtual int size() { return size_; }
  private:
   FILE* file_;
   void* memory_;
   int size_;
 };
+
+
+OS::MemoryMappedFile* OS::MemoryMappedFile::open(const char* name) {
+  FILE* file = fopen(name, "r+");
+  if (file == NULL) return NULL;
+
+  fseek(file, 0, SEEK_END);
+  int size = ftell(file);
+
+  void* memory =
+      mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(file), 0);
+  return new PosixMemoryMappedFile(file, memory, size);
+}
 
 
 OS::MemoryMappedFile* OS::MemoryMappedFile::create(const char* name, int size,
@@ -260,6 +301,10 @@ void OS::LogSharedLibraryAddresses() {
   }
   close(fd);
 #endif
+}
+
+
+void OS::SignalCodeMovingGC() {
 }
 
 
@@ -356,6 +401,12 @@ bool ThreadHandle::IsValid() const {
 
 
 Thread::Thread() : ThreadHandle(ThreadHandle::INVALID) {
+  set_name("v8:<unknown>");
+}
+
+
+Thread::Thread(const char* name) : ThreadHandle(ThreadHandle::INVALID) {
+  set_name(name);
 }
 
 
@@ -372,6 +423,12 @@ static void* ThreadEntry(void* arg) {
   ASSERT(thread->IsValid());
   thread->Run();
   return NULL;
+}
+
+
+void Thread::set_name(const char* name) {
+  strncpy(name_, name, sizeof(name_));
+  name_[sizeof(name_) - 1] = '\0';
 }
 
 
@@ -523,7 +580,7 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
   TickSample sample;
 
   // We always sample the VM state.
-  sample.state = Logger::state();
+  sample.state = VMState::current_state();
 
   active_sampler_->Tick(&sample);
 }
@@ -541,8 +598,11 @@ class Sampler::PlatformData : public Malloced {
 };
 
 
-Sampler::Sampler(int interval, bool profiling)
-    : interval_(interval), profiling_(profiling), active_(false) {
+Sampler::Sampler(int interval)
+    : interval_(interval),
+      profiling_(false),
+      active_(false),
+      samples_taken_(0) {
   data_ = new PlatformData();
 }
 

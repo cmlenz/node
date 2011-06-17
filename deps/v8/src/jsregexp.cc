@@ -33,6 +33,7 @@
 #include "factory.h"
 #include "jsregexp.h"
 #include "platform.h"
+#include "string-search.h"
 #include "runtime.h"
 #include "top.h"
 #include "compilation-cache.h"
@@ -43,7 +44,7 @@
 #include "regexp-macro-assembler-irregexp.h"
 #include "regexp-stack.h"
 
-#ifdef V8_NATIVE_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
 #if V8_TARGET_ARCH_IA32
 #include "ia32/regexp-macro-assembler-ia32.h"
 #elif V8_TARGET_ARCH_X64
@@ -66,11 +67,6 @@ Handle<Object> RegExpImpl::CreateRegExpLiteral(Handle<JSFunction> constructor,
                                                Handle<String> pattern,
                                                Handle<String> flags,
                                                bool* has_pending_exception) {
-  // Ensure that the constructor function has been loaded.
-  if (!constructor->IsLoaded()) {
-    LoadLazy(constructor, has_pending_exception);
-    if (*has_pending_exception) return Handle<Object>();
-  }
   // Call the construct code with 2 arguments.
   Object** argv[2] = { Handle<Object>::cast(pattern).location(),
                        Handle<Object>::cast(flags).location() };
@@ -112,37 +108,6 @@ static inline void ThrowRegExpException(Handle<JSRegExp> re,
 // Generic RegExp methods. Dispatches to implementation specific methods.
 
 
-class OffsetsVector {
- public:
-  inline OffsetsVector(int num_registers)
-      : offsets_vector_length_(num_registers) {
-    if (offsets_vector_length_ > kStaticOffsetsVectorSize) {
-      vector_ = NewArray<int>(offsets_vector_length_);
-    } else {
-      vector_ = static_offsets_vector_;
-    }
-  }
-  inline ~OffsetsVector() {
-    if (offsets_vector_length_ > kStaticOffsetsVectorSize) {
-      DeleteArray(vector_);
-      vector_ = NULL;
-    }
-  }
-  inline int* vector() { return vector_; }
-  inline int length() { return offsets_vector_length_; }
-
- private:
-  int* vector_;
-  int offsets_vector_length_;
-  static const int kStaticOffsetsVectorSize = 50;
-  static int static_offsets_vector_[kStaticOffsetsVectorSize];
-};
-
-
-int OffsetsVector::static_offsets_vector_[
-    OffsetsVector::kStaticOffsetsVectorSize];
-
-
 Handle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
                                    Handle<String> pattern,
                                    Handle<String> flag_str) {
@@ -156,11 +121,13 @@ Handle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
     re->set_data(*cached);
     return re;
   }
-  FlattenString(pattern);
+  pattern = FlattenGetString(pattern);
   CompilationZoneScope zone_scope(DELETE_ON_EXIT);
+  PostponeInterruptsScope postpone;
   RegExpCompileData parse_result;
   FlatStringReader reader(pattern);
-  if (!ParseRegExp(&reader, flags.is_multiline(), &parse_result)) {
+  if (!RegExpParser::ParseRegExp(&reader, flags.is_multiline(),
+                                 &parse_result)) {
     // Throw an exception if we fail to parse the pattern.
     ThrowRegExpException(re,
                          pattern,
@@ -180,7 +147,7 @@ Handle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
     Handle<String> atom_string = Factory::NewStringFromTwoByte(atom_pattern);
     AtomCompile(re, pattern, flags, atom_string);
   } else {
-    IrregexpPrepare(re, pattern, flags, parse_result.capture_count);
+    IrregexpInitialize(re, pattern, flags, parse_result.capture_count);
   }
   ASSERT(re->data()->IsFixedArray());
   // Compilation succeeded so the data is set on the regexp
@@ -239,23 +206,61 @@ static void SetAtomLastCapture(FixedArray* array,
   RegExpImpl::SetCapture(array, 1, to);
 }
 
+  /* template <typename SubjectChar>, typename PatternChar>
+static int ReStringMatch(Vector<const SubjectChar> sub_vector,
+                         Vector<const PatternChar> pat_vector,
+                         int start_index) {
 
+  int pattern_length = pat_vector.length();
+  if (pattern_length == 0) return start_index;
+
+  int subject_length = sub_vector.length();
+  if (start_index + pattern_length > subject_length) return -1;
+  return SearchString(sub_vector, pat_vector, start_index);
+}
+  */
 Handle<Object> RegExpImpl::AtomExec(Handle<JSRegExp> re,
                                     Handle<String> subject,
                                     int index,
                                     Handle<JSArray> last_match_info) {
-  Handle<String> needle(String::cast(re->DataAt(JSRegExp::kAtomPatternIndex)));
+  ASSERT(0 <= index);
+  ASSERT(index <= subject->length());
 
-  uint32_t start_index = index;
+  if (!subject->IsFlat()) FlattenString(subject);
+  AssertNoAllocation no_heap_allocation;  // ensure vectors stay valid
+  // Extract flattened substrings of cons strings before determining asciiness.
+  String* seq_sub = *subject;
+  if (seq_sub->IsConsString()) seq_sub = ConsString::cast(seq_sub)->first();
 
-  int value = Runtime::StringMatch(subject, needle, start_index);
-  if (value == -1) return Factory::null_value();
+  String* needle = String::cast(re->DataAt(JSRegExp::kAtomPatternIndex));
+  int needle_len = needle->length();
+
+  if (needle_len != 0) {
+    if (index + needle_len > subject->length()) return Factory::null_value();
+    // dispatch on type of strings
+    index = (needle->IsAsciiRepresentation()
+             ? (seq_sub->IsAsciiRepresentation()
+                ? SearchString(seq_sub->ToAsciiVector(),
+                               needle->ToAsciiVector(),
+                               index)
+                : SearchString(seq_sub->ToUC16Vector(),
+                               needle->ToAsciiVector(),
+                               index))
+             : (seq_sub->IsAsciiRepresentation()
+                ? SearchString(seq_sub->ToAsciiVector(),
+                               needle->ToUC16Vector(),
+                               index)
+                : SearchString(seq_sub->ToUC16Vector(),
+                               needle->ToUC16Vector(),
+                               index)));
+    if (index == -1) return Factory::null_value();
+  }
   ASSERT(last_match_info->HasFastElements());
 
   {
     NoHandleAllocation no_handles;
     FixedArray* array = FixedArray::cast(last_match_info->elements());
-    SetAtomLastCapture(array, *subject, value, value + needle->length());
+    SetAtomLastCapture(array, *subject, index, index + needle_len);
   }
   return last_match_info;
 }
@@ -271,10 +276,10 @@ Handle<Object> RegExpImpl::AtomExec(Handle<JSRegExp> re,
 // returns false.
 bool RegExpImpl::EnsureCompiledIrregexp(Handle<JSRegExp> re, bool is_ascii) {
   Object* compiled_code = re->DataAt(JSRegExp::code_index(is_ascii));
-#ifdef V8_NATIVE_REGEXP
-  if (compiled_code->IsCode()) return true;
-#else  // ! V8_NATIVE_REGEXP (RegExp interpreter code)
+#ifdef V8_INTERPRETED_REGEXP
   if (compiled_code->IsByteArray()) return true;
+#else  // V8_INTERPRETED_REGEXP (RegExp native code)
+  if (compiled_code->IsCode()) return true;
 #endif
   return CompileIrregexp(re, is_ascii);
 }
@@ -283,6 +288,7 @@ bool RegExpImpl::EnsureCompiledIrregexp(Handle<JSRegExp> re, bool is_ascii) {
 bool RegExpImpl::CompileIrregexp(Handle<JSRegExp> re, bool is_ascii) {
   // Compile the RegExp.
   CompilationZoneScope zone_scope(DELETE_ON_EXIT);
+  PostponeInterruptsScope postpone;
   Object* entry = re->DataAt(JSRegExp::code_index(is_ascii));
   if (entry->IsJSObject()) {
     // If it's a JSObject, a previous compilation failed and threw this object.
@@ -301,7 +307,8 @@ bool RegExpImpl::CompileIrregexp(Handle<JSRegExp> re, bool is_ascii) {
 
   RegExpCompileData compile_data;
   FlatStringReader reader(pattern);
-  if (!ParseRegExp(&reader, flags.is_multiline(), &compile_data)) {
+  if (!RegExpParser::ParseRegExp(&reader, flags.is_multiline(),
+                                 &compile_data)) {
     // Throw an exception if we fail to parse the pattern.
     // THIS SHOULD NOT HAPPEN. We already pre-parsed it successfully once.
     ThrowRegExpException(re,
@@ -372,16 +379,119 @@ Code* RegExpImpl::IrregexpNativeCode(FixedArray* re, bool is_ascii) {
 }
 
 
-void RegExpImpl::IrregexpPrepare(Handle<JSRegExp> re,
-                                 Handle<String> pattern,
-                                 JSRegExp::Flags flags,
-                                 int capture_count) {
+void RegExpImpl::IrregexpInitialize(Handle<JSRegExp> re,
+                                    Handle<String> pattern,
+                                    JSRegExp::Flags flags,
+                                    int capture_count) {
   // Initialize compiled code entries to null.
   Factory::SetRegExpIrregexpData(re,
                                  JSRegExp::IRREGEXP,
                                  pattern,
                                  flags,
                                  capture_count);
+}
+
+
+int RegExpImpl::IrregexpPrepare(Handle<JSRegExp> regexp,
+                                Handle<String> subject) {
+  if (!subject->IsFlat()) {
+    FlattenString(subject);
+  }
+  // Check the asciiness of the underlying storage.
+  bool is_ascii;
+  {
+    AssertNoAllocation no_gc;
+    String* sequential_string = *subject;
+    if (subject->IsConsString()) {
+      sequential_string = ConsString::cast(*subject)->first();
+    }
+    is_ascii = sequential_string->IsAsciiRepresentation();
+  }
+  if (!EnsureCompiledIrregexp(regexp, is_ascii)) {
+    return -1;
+  }
+#ifdef V8_INTERPRETED_REGEXP
+  // Byte-code regexp needs space allocated for all its registers.
+  return IrregexpNumberOfRegisters(FixedArray::cast(regexp->data()));
+#else  // V8_INTERPRETED_REGEXP
+  // Native regexp only needs room to output captures. Registers are handled
+  // internally.
+  return (IrregexpNumberOfCaptures(FixedArray::cast(regexp->data())) + 1) * 2;
+#endif  // V8_INTERPRETED_REGEXP
+}
+
+
+RegExpImpl::IrregexpResult RegExpImpl::IrregexpExecOnce(
+    Handle<JSRegExp> regexp,
+    Handle<String> subject,
+    int index,
+    Vector<int> output) {
+  Handle<FixedArray> irregexp(FixedArray::cast(regexp->data()));
+
+  ASSERT(index >= 0);
+  ASSERT(index <= subject->length());
+  ASSERT(subject->IsFlat());
+
+  // A flat ASCII string might have a two-byte first part.
+  if (subject->IsConsString()) {
+    subject = Handle<String>(ConsString::cast(*subject)->first());
+  }
+
+#ifndef V8_INTERPRETED_REGEXP
+  ASSERT(output.length() >=
+      (IrregexpNumberOfCaptures(*irregexp) + 1) * 2);
+  do {
+    bool is_ascii = subject->IsAsciiRepresentation();
+    Handle<Code> code(IrregexpNativeCode(*irregexp, is_ascii));
+    NativeRegExpMacroAssembler::Result res =
+        NativeRegExpMacroAssembler::Match(code,
+                                          subject,
+                                          output.start(),
+                                          output.length(),
+                                          index);
+    if (res != NativeRegExpMacroAssembler::RETRY) {
+      ASSERT(res != NativeRegExpMacroAssembler::EXCEPTION ||
+             Top::has_pending_exception());
+      STATIC_ASSERT(
+          static_cast<int>(NativeRegExpMacroAssembler::SUCCESS) == RE_SUCCESS);
+      STATIC_ASSERT(
+          static_cast<int>(NativeRegExpMacroAssembler::FAILURE) == RE_FAILURE);
+      STATIC_ASSERT(static_cast<int>(NativeRegExpMacroAssembler::EXCEPTION)
+                    == RE_EXCEPTION);
+      return static_cast<IrregexpResult>(res);
+    }
+    // If result is RETRY, the string has changed representation, and we
+    // must restart from scratch.
+    // In this case, it means we must make sure we are prepared to handle
+    // the, potentially, different subject (the string can switch between
+    // being internal and external, and even between being ASCII and UC16,
+    // but the characters are always the same).
+    IrregexpPrepare(regexp, subject);
+  } while (true);
+  UNREACHABLE();
+  return RE_EXCEPTION;
+#else  // V8_INTERPRETED_REGEXP
+
+  ASSERT(output.length() >= IrregexpNumberOfRegisters(*irregexp));
+  bool is_ascii = subject->IsAsciiRepresentation();
+  // We must have done EnsureCompiledIrregexp, so we can get the number of
+  // registers.
+  int* register_vector = output.start();
+  int number_of_capture_registers =
+      (IrregexpNumberOfCaptures(*irregexp) + 1) * 2;
+  for (int i = number_of_capture_registers - 1; i >= 0; i--) {
+    register_vector[i] = -1;
+  }
+  Handle<ByteArray> byte_codes(IrregexpByteCode(*irregexp, is_ascii));
+
+  if (IrregexpInterpreter::Match(byte_codes,
+                                 subject,
+                                 register_vector,
+                                 index)) {
+    return RE_SUCCESS;
+  }
+  return RE_FAILURE;
+#endif  // V8_INTERPRETED_REGEXP
 }
 
 
@@ -392,10 +502,7 @@ Handle<Object> RegExpImpl::IrregexpExec(Handle<JSRegExp> jsregexp,
   ASSERT_EQ(jsregexp->TypeTag(), JSRegExp::IRREGEXP);
 
   // Prepare space for the return values.
-  int number_of_capture_registers =
-      (IrregexpNumberOfCaptures(FixedArray::cast(jsregexp->data())) + 1) * 2;
-
-#ifndef V8_NATIVE_REGEXP
+#ifdef V8_INTERPRETED_REGEXP
 #ifdef DEBUG
   if (FLAG_trace_regexp_bytecodes) {
     String* pattern = jsregexp->Pattern();
@@ -404,93 +511,40 @@ Handle<Object> RegExpImpl::IrregexpExec(Handle<JSRegExp> jsregexp,
   }
 #endif
 #endif
-
-  if (!subject->IsFlat()) {
-    FlattenString(subject);
-  }
-
-  last_match_info->EnsureSize(number_of_capture_registers + kLastMatchOverhead);
-
-  Handle<FixedArray> array;
-
-  // Dispatch to the correct RegExp implementation.
-  Handle<FixedArray> regexp(FixedArray::cast(jsregexp->data()));
-
-#ifdef V8_NATIVE_REGEXP
-
-  OffsetsVector captures(number_of_capture_registers);
-  int* captures_vector = captures.vector();
-  NativeRegExpMacroAssembler::Result res;
-  do {
-    bool is_ascii = subject->IsAsciiRepresentation();
-    if (!EnsureCompiledIrregexp(jsregexp, is_ascii)) {
-      return Handle<Object>::null();
-    }
-    Handle<Code> code(RegExpImpl::IrregexpNativeCode(*regexp, is_ascii));
-    res = NativeRegExpMacroAssembler::Match(code,
-                                            subject,
-                                            captures_vector,
-                                            captures.length(),
-                                            previous_index);
-    // If result is RETRY, the string have changed representation, and we
-    // must restart from scratch.
-  } while (res == NativeRegExpMacroAssembler::RETRY);
-  if (res == NativeRegExpMacroAssembler::EXCEPTION) {
+  int required_registers = RegExpImpl::IrregexpPrepare(jsregexp, subject);
+  if (required_registers < 0) {
+    // Compiling failed with an exception.
     ASSERT(Top::has_pending_exception());
     return Handle<Object>::null();
   }
-  ASSERT(res == NativeRegExpMacroAssembler::SUCCESS
-      || res == NativeRegExpMacroAssembler::FAILURE);
 
-  if (res != NativeRegExpMacroAssembler::SUCCESS) return Factory::null_value();
+  OffsetsVector registers(required_registers);
 
-  array = Handle<FixedArray>(FixedArray::cast(last_match_info->elements()));
-  ASSERT(array->length() >= number_of_capture_registers + kLastMatchOverhead);
-  // The captures come in (start, end+1) pairs.
-  for (int i = 0; i < number_of_capture_registers; i += 2) {
-    SetCapture(*array, i, captures_vector[i]);
-    SetCapture(*array, i + 1, captures_vector[i + 1]);
+  IrregexpResult res = RegExpImpl::IrregexpExecOnce(
+      jsregexp, subject, previous_index, Vector<int>(registers.vector(),
+                                                     registers.length()));
+  if (res == RE_SUCCESS) {
+    int capture_register_count =
+        (IrregexpNumberOfCaptures(FixedArray::cast(jsregexp->data())) + 1) * 2;
+    last_match_info->EnsureSize(capture_register_count + kLastMatchOverhead);
+    AssertNoAllocation no_gc;
+    int* register_vector = registers.vector();
+    FixedArray* array = FixedArray::cast(last_match_info->elements());
+    for (int i = 0; i < capture_register_count; i += 2) {
+      SetCapture(array, i, register_vector[i]);
+      SetCapture(array, i + 1, register_vector[i + 1]);
+    }
+    SetLastCaptureCount(array, capture_register_count);
+    SetLastSubject(array, *subject);
+    SetLastInput(array, *subject);
+    return last_match_info;
   }
-
-#else  // ! V8_NATIVE_REGEXP
-
-  bool is_ascii = subject->IsAsciiRepresentation();
-  if (!EnsureCompiledIrregexp(jsregexp, is_ascii)) {
+  if (res == RE_EXCEPTION) {
+    ASSERT(Top::has_pending_exception());
     return Handle<Object>::null();
   }
-  // Now that we have done EnsureCompiledIrregexp we can get the number of
-  // registers.
-  int number_of_registers =
-      IrregexpNumberOfRegisters(FixedArray::cast(jsregexp->data()));
-  OffsetsVector registers(number_of_registers);
-  int* register_vector = registers.vector();
-  for (int i = number_of_capture_registers - 1; i >= 0; i--) {
-    register_vector[i] = -1;
-  }
-  Handle<ByteArray> byte_codes(IrregexpByteCode(*regexp, is_ascii));
-
-  if (!IrregexpInterpreter::Match(byte_codes,
-                                  subject,
-                                  register_vector,
-                                  previous_index)) {
-    return Factory::null_value();
-  }
-
-  array = Handle<FixedArray>(FixedArray::cast(last_match_info->elements()));
-  ASSERT(array->length() >= number_of_capture_registers + kLastMatchOverhead);
-  // The captures come in (start, end+1) pairs.
-  for (int i = 0; i < number_of_capture_registers; i += 2) {
-    SetCapture(*array, i, register_vector[i]);
-    SetCapture(*array, i + 1, register_vector[i + 1]);
-  }
-
-#endif  // V8_NATIVE_REGEXP
-
-  SetLastCaptureCount(*array, number_of_capture_registers);
-  SetLastSubject(*array, *subject);
-  SetLastInput(*array, *subject);
-
-  return last_match_info;
+  ASSERT(res == RE_FAILURE);
+  return Factory::null_value();
 }
 
 
@@ -1258,7 +1312,7 @@ static int GetCaseIndependentLetters(uc16 character,
                                      bool ascii_subject,
                                      unibrow::uchar* letters) {
   int length = uncanonicalize.get(character, '\0', letters);
-  // Unibrow returns 0 or 1 for characters where case independependence is
+  // Unibrow returns 0 or 1 for characters where case independence is
   // trivial.
   if (length == 0) {
     letters[0] = character;
@@ -1431,14 +1485,6 @@ static void EmitCharClass(RegExpMacroAssembler* macro_assembler,
                           int cp_offset,
                           bool check_offset,
                           bool preloaded) {
-  if (cc->is_standard() &&
-      macro_assembler->CheckSpecialCharacterClass(cc->standard_type(),
-                                                  cp_offset,
-                                                  check_offset,
-                                                  on_failure)) {
-    return;
-  }
-
   ZoneList<CharacterRange>* ranges = cc->ranges();
   int max_char;
   if (ascii) {
@@ -1487,6 +1533,12 @@ static void EmitCharClass(RegExpMacroAssembler* macro_assembler,
 
   if (!preloaded) {
     macro_assembler->LoadCurrentCharacter(cp_offset, on_failure, check_offset);
+  }
+
+  if (cc->is_standard() &&
+        macro_assembler->CheckSpecialCharacterClass(cc->standard_type(),
+                                                    on_failure)) {
+      return;
   }
 
   for (int i = 0; i < last_valid_range; i++) {
@@ -1598,41 +1650,64 @@ RegExpNode::LimitResult RegExpNode::LimitVersions(RegExpCompiler* compiler,
 }
 
 
-int ActionNode::EatsAtLeast(int still_to_find, int recursion_depth) {
+int ActionNode::EatsAtLeast(int still_to_find,
+                            int recursion_depth,
+                            bool not_at_start) {
   if (recursion_depth > RegExpCompiler::kMaxRecursion) return 0;
   if (type_ == POSITIVE_SUBMATCH_SUCCESS) return 0;  // Rewinds input!
-  return on_success()->EatsAtLeast(still_to_find, recursion_depth + 1);
+  return on_success()->EatsAtLeast(still_to_find,
+                                   recursion_depth + 1,
+                                   not_at_start);
 }
 
 
-int AssertionNode::EatsAtLeast(int still_to_find, int recursion_depth) {
+int AssertionNode::EatsAtLeast(int still_to_find,
+                               int recursion_depth,
+                               bool not_at_start) {
   if (recursion_depth > RegExpCompiler::kMaxRecursion) return 0;
-  return on_success()->EatsAtLeast(still_to_find, recursion_depth + 1);
+  // If we know we are not at the start and we are asked "how many characters
+  // will you match if you succeed?" then we can answer anything since false
+  // implies false.  So lets just return the max answer (still_to_find) since
+  // that won't prevent us from preloading a lot of characters for the other
+  // branches in the node graph.
+  if (type() == AT_START && not_at_start) return still_to_find;
+  return on_success()->EatsAtLeast(still_to_find,
+                                   recursion_depth + 1,
+                                   not_at_start);
 }
 
 
-int BackReferenceNode::EatsAtLeast(int still_to_find, int recursion_depth) {
+int BackReferenceNode::EatsAtLeast(int still_to_find,
+                                   int recursion_depth,
+                                   bool not_at_start) {
   if (recursion_depth > RegExpCompiler::kMaxRecursion) return 0;
-  return on_success()->EatsAtLeast(still_to_find, recursion_depth + 1);
+  return on_success()->EatsAtLeast(still_to_find,
+                                   recursion_depth + 1,
+                                   not_at_start);
 }
 
 
-int TextNode::EatsAtLeast(int still_to_find, int recursion_depth) {
+int TextNode::EatsAtLeast(int still_to_find,
+                          int recursion_depth,
+                          bool not_at_start) {
   int answer = Length();
   if (answer >= still_to_find) return answer;
   if (recursion_depth > RegExpCompiler::kMaxRecursion) return answer;
+  // We are not at start after this node so we set the last argument to 'true'.
   return answer + on_success()->EatsAtLeast(still_to_find - answer,
-                                            recursion_depth + 1);
+                                            recursion_depth + 1,
+                                            true);
 }
 
 
-int NegativeLookaheadChoiceNode:: EatsAtLeast(int still_to_find,
-                                              int recursion_depth) {
+int NegativeLookaheadChoiceNode::EatsAtLeast(int still_to_find,
+                                             int recursion_depth,
+                                             bool not_at_start) {
   if (recursion_depth > RegExpCompiler::kMaxRecursion) return 0;
   // Alternative 0 is the negative lookahead, alternative 1 is what comes
   // afterwards.
   RegExpNode* node = alternatives_->at(1).node();
-  return node->EatsAtLeast(still_to_find, recursion_depth + 1);
+  return node->EatsAtLeast(still_to_find, recursion_depth + 1, not_at_start);
 }
 
 
@@ -1650,7 +1725,8 @@ void NegativeLookaheadChoiceNode::GetQuickCheckDetails(
 
 int ChoiceNode::EatsAtLeastHelper(int still_to_find,
                                   int recursion_depth,
-                                  RegExpNode* ignore_this_node) {
+                                  RegExpNode* ignore_this_node,
+                                  bool not_at_start) {
   if (recursion_depth > RegExpCompiler::kMaxRecursion) return 0;
   int min = 100;
   int choice_count = alternatives_->length();
@@ -1658,20 +1734,31 @@ int ChoiceNode::EatsAtLeastHelper(int still_to_find,
     RegExpNode* node = alternatives_->at(i).node();
     if (node == ignore_this_node) continue;
     int node_eats_at_least = node->EatsAtLeast(still_to_find,
-                                               recursion_depth + 1);
+                                               recursion_depth + 1,
+                                               not_at_start);
     if (node_eats_at_least < min) min = node_eats_at_least;
   }
   return min;
 }
 
 
-int LoopChoiceNode::EatsAtLeast(int still_to_find, int recursion_depth) {
-  return EatsAtLeastHelper(still_to_find, recursion_depth, loop_node_);
+int LoopChoiceNode::EatsAtLeast(int still_to_find,
+                                int recursion_depth,
+                                bool not_at_start) {
+  return EatsAtLeastHelper(still_to_find,
+                           recursion_depth,
+                           loop_node_,
+                           not_at_start);
 }
 
 
-int ChoiceNode::EatsAtLeast(int still_to_find, int recursion_depth) {
-  return EatsAtLeastHelper(still_to_find, recursion_depth, NULL);
+int ChoiceNode::EatsAtLeast(int still_to_find,
+                            int recursion_depth,
+                            bool not_at_start) {
+  return EatsAtLeastHelper(still_to_find,
+                           recursion_depth,
+                           NULL,
+                           not_at_start);
 }
 
 
@@ -1749,9 +1836,11 @@ bool RegExpNode::EmitQuickCheck(RegExpCompiler* compiler,
     if ((mask & char_mask) == char_mask) need_mask = false;
     mask &= char_mask;
   } else {
-    // For 2-character preloads in ASCII mode we also use a 16 bit load with
-    // zero extend.
+    // For 2-character preloads in ASCII mode or 1-character preloads in
+    // TWO_BYTE mode we also use a 16 bit load with zero extend.
     if (details->characters() == 2 && compiler->ascii()) {
+      if ((mask & 0x7f7f) == 0x7f7f) need_mask = false;
+    } else if (details->characters() == 1 && !compiler->ascii()) {
       if ((mask & 0xffff) == 0xffff) need_mask = false;
     } else {
       if (mask == 0xffffffff) need_mask = false;
@@ -2049,6 +2138,12 @@ static void EmitWordCheck(RegExpMacroAssembler* assembler,
                           Label* word,
                           Label* non_word,
                           bool fall_through_on_word) {
+  if (assembler->CheckSpecialCharacterClass(
+          fall_through_on_word ? 'w' : 'W',
+          fall_through_on_word ? non_word : word)) {
+    // Optimized implementation available.
+    return;
+  }
   assembler->CheckCharacterGT('z', non_word);
   assembler->CheckCharacterLT('0', non_word);
   assembler->CheckCharacterGT('a' - 1, word);
@@ -2085,13 +2180,56 @@ static void EmitHat(RegExpCompiler* compiler,
   assembler->LoadCurrentCharacter(new_trace.cp_offset() -1,
                                   new_trace.backtrack(),
                                   false);
-  // Newline means \n, \r, 0x2028 or 0x2029.
-  if (!compiler->ascii()) {
-    assembler->CheckCharacterAfterAnd(0x2028, 0xfffe, &ok);
+  if (!assembler->CheckSpecialCharacterClass('n',
+                                             new_trace.backtrack())) {
+    // Newline means \n, \r, 0x2028 or 0x2029.
+    if (!compiler->ascii()) {
+      assembler->CheckCharacterAfterAnd(0x2028, 0xfffe, &ok);
+    }
+    assembler->CheckCharacter('\n', &ok);
+    assembler->CheckNotCharacter('\r', new_trace.backtrack());
   }
-  assembler->CheckCharacter('\n', &ok);
-  assembler->CheckNotCharacter('\r', new_trace.backtrack());
   assembler->Bind(&ok);
+  on_success->Emit(compiler, &new_trace);
+}
+
+
+// Emit the code to handle \b and \B (word-boundary or non-word-boundary)
+// when we know whether the next character must be a word character or not.
+static void EmitHalfBoundaryCheck(AssertionNode::AssertionNodeType type,
+                                  RegExpCompiler* compiler,
+                                  RegExpNode* on_success,
+                                  Trace* trace) {
+  RegExpMacroAssembler* assembler = compiler->macro_assembler();
+  Label done;
+
+  Trace new_trace(*trace);
+
+  bool expect_word_character = (type == AssertionNode::AFTER_WORD_CHARACTER);
+  Label* on_word = expect_word_character ? &done : new_trace.backtrack();
+  Label* on_non_word = expect_word_character ? new_trace.backtrack() : &done;
+
+  // Check whether previous character was a word character.
+  switch (trace->at_start()) {
+    case Trace::TRUE:
+      if (expect_word_character) {
+        assembler->GoTo(on_non_word);
+      }
+      break;
+    case Trace::UNKNOWN:
+      ASSERT_EQ(0, trace->cp_offset());
+      assembler->CheckAtStart(on_non_word);
+      // Fall through.
+    case Trace::FALSE:
+      int prev_char_offset = trace->cp_offset() - 1;
+      assembler->LoadCurrentCharacter(prev_char_offset, NULL, false, 1);
+      EmitWordCheck(assembler, on_word, on_non_word, expect_word_character);
+      // We may or may not have loaded the previous character.
+      new_trace.InvalidateCurrentCharacter();
+  }
+
+  assembler->Bind(&done);
+
   on_success->Emit(compiler, &new_trace);
 }
 
@@ -2205,10 +2343,15 @@ void AssertionNode::Emit(RegExpCompiler* compiler, Trace* trace) {
     case AFTER_NEWLINE:
       EmitHat(compiler, on_success(), trace);
       return;
-    case AT_NON_BOUNDARY:
     case AT_BOUNDARY:
+    case AT_NON_BOUNDARY: {
       EmitBoundaryCheck(type_, compiler, on_success(), trace);
       return;
+    }
+    case AFTER_WORD_CHARACTER:
+    case AFTER_NONWORD_CHARACTER: {
+      EmitHalfBoundaryCheck(type_, compiler, on_success(), trace);
+    }
   }
   on_success()->Emit(compiler, trace);
 }
@@ -2522,8 +2665,9 @@ void LoopChoiceNode::Emit(RegExpCompiler* compiler, Trace* trace) {
 }
 
 
-int ChoiceNode::CalculatePreloadCharacters(RegExpCompiler* compiler) {
-  int preload_characters = EatsAtLeast(4, 0);
+int ChoiceNode::CalculatePreloadCharacters(RegExpCompiler* compiler,
+                                           bool not_at_start) {
+  int preload_characters = EatsAtLeast(4, 0, not_at_start);
   if (compiler->macro_assembler()->CanReadUnaligned()) {
     bool ascii = compiler->ascii();
     if (ascii) {
@@ -2731,7 +2875,9 @@ void ChoiceNode::Emit(RegExpCompiler* compiler, Trace* trace) {
 
   int first_normal_choice = greedy_loop ? 1 : 0;
 
-  int preload_characters = CalculatePreloadCharacters(compiler);
+  int preload_characters =
+      CalculatePreloadCharacters(compiler,
+                                 current_trace->at_start() == Trace::FALSE);
   bool preload_is_current =
       (current_trace->characters_preloaded() == preload_characters);
   bool preload_has_checked_bounds = preload_is_current;
@@ -2791,7 +2937,7 @@ void ChoiceNode::Emit(RegExpCompiler* compiler, Trace* trace) {
       // to generate probably can't use it.
       if (i != first_normal_choice) {
         alt_gen->expects_preload = false;
-        new_trace.set_characters_preloaded(0);
+        new_trace.InvalidateCurrentCharacter();
       }
       if (i < choice_count - 1) {
         new_trace.set_backtrack(&alt_gen->after);
@@ -3282,6 +3428,12 @@ void DotPrinter::VisitAssertion(AssertionNode* that) {
     case AssertionNode::AFTER_NEWLINE:
       stream()->Add("label=\"(?<=\\n)\", shape=septagon");
       break;
+    case AssertionNode::AFTER_WORD_CHARACTER:
+      stream()->Add("label=\"(?<=\\w)\", shape=septagon");
+      break;
+    case AssertionNode::AFTER_NONWORD_CHARACTER:
+      stream()->Add("label=\"(?<=\\W)\", shape=septagon");
+      break;
   }
   stream()->Add("];\n");
   PrintAttributes(that);
@@ -3482,6 +3634,20 @@ bool RegExpCharacterClass::is_standard() {
                            kLineTerminatorRanges,
                            kLineTerminatorRangeCount)) {
     set_.set_standard_set_type('.');
+    return true;
+  }
+  if (CompareRanges(set_.ranges(),
+                    kLineTerminatorRanges,
+                    kLineTerminatorRangeCount)) {
+    set_.set_standard_set_type('n');
+    return true;
+  }
+  if (CompareRanges(set_.ranges(), kWordRanges, kWordRangeCount)) {
+    set_.set_standard_set_type('w');
+    return true;
+  }
+  if (CompareInverseRanges(set_.ranges(), kWordRanges, kWordRangeCount)) {
+    set_.set_standard_set_type('W');
     return true;
   }
   return false;
@@ -3938,75 +4104,144 @@ void CharacterRange::AddCaseEquivalents(ZoneList<CharacterRange>* ranges,
         ranges->Add(CharacterRange::Singleton(chars[i]));
       }
     }
-  } else if (bottom <= kRangeCanonicalizeMax &&
-             top <= kRangeCanonicalizeMax) {
+  } else {
     // If this is a range we expand the characters block by block,
     // expanding contiguous subranges (blocks) one at a time.
     // The approach is as follows.  For a given start character we
-    // look up the block that contains it, for instance 'a' if the
-    // start character is 'c'.  A block is characterized by the property
-    // that all characters uncanonicalize in the same way as the first
-    // element, except that each entry in the result is incremented
-    // by the distance from the first element.  So a-z is a block
-    // because 'a' uncanonicalizes to ['a', 'A'] and the k'th letter
-    // uncanonicalizes to ['a' + k, 'A' + k].
-    // Once we've found the start point we look up its uncanonicalization
+    // look up the remainder of the block that contains it (represented
+    // by the end point), for instance we find 'z' if the character
+    // is 'c'.  A block is characterized by the property
+    // that all characters uncanonicalize in the same way, except that
+    // each entry in the result is incremented by the distance from the first
+    // element.  So a-z is a block because 'a' uncanonicalizes to ['a', 'A'] and
+    // the k'th letter uncanonicalizes to ['a' + k, 'A' + k].
+    // Once we've found the end point we look up its uncanonicalization
     // and produce a range for each element.  For instance for [c-f]
-    // we look up ['a', 'A'] and produce [c-f] and [C-F].  We then only
+    // we look up ['z', 'Z'] and produce [c-f] and [C-F].  We then only
     // add a range if it is not already contained in the input, so [c-f]
     // will be skipped but [C-F] will be added.  If this range is not
     // completely contained in a block we do this for all the blocks
-    // covered by the range.
+    // covered by the range (handling characters that is not in a block
+    // as a "singleton block").
     unibrow::uchar range[unibrow::Ecma262UnCanonicalize::kMaxWidth];
-    // First, look up the block that contains the 'bottom' character.
-    int length = canonrange.get(bottom, '\0', range);
-    if (length == 0) {
-      range[0] = bottom;
-    } else {
-      ASSERT_EQ(1, length);
-    }
     int pos = bottom;
-    // The start of the current block.  Note that except for the first
-    // iteration 'start' is always equal to 'pos'.
-    int start;
-    // If it is not the start point of a block the entry contains the
-    // offset of the character from the start point.
-    if ((range[0] & kStartMarker) == 0) {
-      start = pos - range[0];
-    } else {
-      start = pos;
-    }
-    // Then we add the ranges one at a time, incrementing the current
-    // position to be after the last block each time.  The position
-    // always points to the start of a block.
     while (pos < top) {
-      length = canonrange.get(start, '\0', range);
+      int length = canonrange.get(pos, '\0', range);
+      uc16 block_end;
       if (length == 0) {
-        range[0] = start;
+        block_end = pos;
       } else {
         ASSERT_EQ(1, length);
+        block_end = range[0];
       }
-      ASSERT((range[0] & kStartMarker) != 0);
-      // The start point of a block contains the distance to the end
-      // of the range.
-      int block_end = start + (range[0] & kPayloadMask) - 1;
       int end = (block_end > top) ? top : block_end;
-      length = uncanonicalize.get(start, '\0', range);
+      length = uncanonicalize.get(block_end, '\0', range);
       for (int i = 0; i < length; i++) {
         uc32 c = range[i];
-        uc16 range_from = c + (pos - start);
-        uc16 range_to = c + (end - start);
+        uc16 range_from = c - (block_end - pos);
+        uc16 range_to = c - (block_end - end);
         if (!(bottom <= range_from && range_to <= top)) {
           ranges->Add(CharacterRange(range_from, range_to));
         }
       }
-      start = pos = block_end + 1;
+      pos = end + 1;
     }
-  } else {
-    // Unibrow ranges don't work for high characters due to the "2^11 bug".
-    // Therefore we do something dumber for these ranges.
-    AddUncanonicals(ranges, bottom, top);
   }
+}
+
+
+bool CharacterRange::IsCanonical(ZoneList<CharacterRange>* ranges) {
+  ASSERT_NOT_NULL(ranges);
+  int n = ranges->length();
+  if (n <= 1) return true;
+  int max = ranges->at(0).to();
+  for (int i = 1; i < n; i++) {
+    CharacterRange next_range = ranges->at(i);
+    if (next_range.from() <= max + 1) return false;
+    max = next_range.to();
+  }
+  return true;
+}
+
+SetRelation CharacterRange::WordCharacterRelation(
+    ZoneList<CharacterRange>* range) {
+  ASSERT(IsCanonical(range));
+  int i = 0;  // Word character range index.
+  int j = 0;  // Argument range index.
+  ASSERT_NE(0, kWordRangeCount);
+  SetRelation result;
+  if (range->length() == 0) {
+    result.SetElementsInSecondSet();
+    return result;
+  }
+  CharacterRange argument_range = range->at(0);
+  CharacterRange word_range = CharacterRange(kWordRanges[0], kWordRanges[1]);
+  while (i < kWordRangeCount && j < range->length()) {
+    // Check the two ranges for the five cases:
+    // - no overlap.
+    // - partial overlap (there are elements in both ranges that isn't
+    //   in the other, and there are also elements that are in both).
+    // - argument range entirely inside word range.
+    // - word range entirely inside argument range.
+    // - ranges are completely equal.
+
+    // First check for no overlap. The earlier range is not in the other set.
+    if (argument_range.from() > word_range.to()) {
+      // Ranges are disjoint. The earlier word range contains elements that
+      // cannot be in the argument set.
+      result.SetElementsInSecondSet();
+    } else if (word_range.from() > argument_range.to()) {
+      // Ranges are disjoint. The earlier argument range contains elements that
+      // cannot be in the word set.
+      result.SetElementsInFirstSet();
+    } else if (word_range.from() <= argument_range.from() &&
+               word_range.to() >= argument_range.from()) {
+      result.SetElementsInBothSets();
+      // argument range completely inside word range.
+      if (word_range.from() < argument_range.from() ||
+          word_range.to() > argument_range.from()) {
+        result.SetElementsInSecondSet();
+      }
+    } else if (word_range.from() >= argument_range.from() &&
+               word_range.to() <= argument_range.from()) {
+      result.SetElementsInBothSets();
+      result.SetElementsInFirstSet();
+    } else {
+      // There is overlap, and neither is a subrange of the other
+      result.SetElementsInFirstSet();
+      result.SetElementsInSecondSet();
+      result.SetElementsInBothSets();
+    }
+    if (result.NonTrivialIntersection()) {
+      // The result is as (im)precise as we can possibly make it.
+      return result;
+    }
+    // Progress the range(s) with minimal to-character.
+    uc16 word_to = word_range.to();
+    uc16 argument_to = argument_range.to();
+    if (argument_to <= word_to) {
+      j++;
+      if (j < range->length()) {
+        argument_range = range->at(j);
+      }
+    }
+    if (word_to <= argument_to) {
+      i += 2;
+      if (i < kWordRangeCount) {
+        word_range = CharacterRange(kWordRanges[i], kWordRanges[i + 1]);
+      }
+    }
+  }
+  // Check if anything wasn't compared in the loop.
+  if (i < kWordRangeCount) {
+    // word range contains something not in argument range.
+    result.SetElementsInSecondSet();
+  } else if (j < range->length()) {
+    // Argument range contains something not in word range.
+    result.SetElementsInFirstSet();
+  }
+
+  return result;
 }
 
 
@@ -4025,20 +4260,14 @@ static void AddUncanonicals(ZoneList<CharacterRange>* ranges,
   // 0xa800 - 0xfaff
   // 0xfc00 - 0xfeff
   const int boundary_count = 18;
-  // The ASCII boundary and the kRangeCanonicalizeMax boundary are also in this
-  // array.  This is to split up big ranges and not because they actually denote
-  // a case-mapping-free-zone.
-  ASSERT(CharacterRange::kRangeCanonicalizeMax < 0x600);
-  const int kFirstRealCaselessZoneIndex = 2;
-  int boundaries[] = {0x80, CharacterRange::kRangeCanonicalizeMax,
+  int boundaries[] = {
       0x600, 0x1000, 0x1100, 0x1d00, 0x2000, 0x2100, 0x2200, 0x2400, 0x2500,
       0x2c00, 0x2e00, 0xa600, 0xa800, 0xfb00, 0xfc00, 0xff00};
 
   // Special ASCII rule from spec can save us some work here.
   if (bottom == 0x80 && top == 0xffff) return;
 
-  // We have optimized support for this range.
-  if (top <= CharacterRange::kRangeCanonicalizeMax) {
+  if (top <= boundaries[0]) {
     CharacterRange range(bottom, top);
     range.AddCaseEquivalents(ranges, false);
     return;
@@ -4055,8 +4284,7 @@ static void AddUncanonicals(ZoneList<CharacterRange>* ranges,
   }
 
   // If we are completely in a zone with no case mappings then we are done.
-  // We start at 2 so as not to except the ASCII range from mappings.
-  for (int i = kFirstRealCaselessZoneIndex; i < boundary_count; i += 2) {
+  for (int i = 0; i < boundary_count; i += 2) {
     if (bottom >= boundaries[i] && top < boundaries[i + 1]) {
 #ifdef DEBUG
       for (int j = bottom; j <= top; j++) {
@@ -4116,6 +4344,290 @@ ZoneList<CharacterRange>* CharacterSet::ranges() {
     CharacterRange::AddClassEscape(standard_set_type_, ranges_);
   }
   return ranges_;
+}
+
+
+// Move a number of elements in a zonelist to another position
+// in the same list. Handles overlapping source and target areas.
+static void MoveRanges(ZoneList<CharacterRange>* list,
+                       int from,
+                       int to,
+                       int count) {
+  // Ranges are potentially overlapping.
+  if (from < to) {
+    for (int i = count - 1; i >= 0; i--) {
+      list->at(to + i) = list->at(from + i);
+    }
+  } else {
+    for (int i = 0; i < count; i++) {
+      list->at(to + i) = list->at(from + i);
+    }
+  }
+}
+
+
+static int InsertRangeInCanonicalList(ZoneList<CharacterRange>* list,
+                                      int count,
+                                      CharacterRange insert) {
+  // Inserts a range into list[0..count[, which must be sorted
+  // by from value and non-overlapping and non-adjacent, using at most
+  // list[0..count] for the result. Returns the number of resulting
+  // canonicalized ranges. Inserting a range may collapse existing ranges into
+  // fewer ranges, so the return value can be anything in the range 1..count+1.
+  uc16 from = insert.from();
+  uc16 to = insert.to();
+  int start_pos = 0;
+  int end_pos = count;
+  for (int i = count - 1; i >= 0; i--) {
+    CharacterRange current = list->at(i);
+    if (current.from() > to + 1) {
+      end_pos = i;
+    } else if (current.to() + 1 < from) {
+      start_pos = i + 1;
+      break;
+    }
+  }
+
+  // Inserted range overlaps, or is adjacent to, ranges at positions
+  // [start_pos..end_pos[. Ranges before start_pos or at or after end_pos are
+  // not affected by the insertion.
+  // If start_pos == end_pos, the range must be inserted before start_pos.
+  // if start_pos < end_pos, the entire range from start_pos to end_pos
+  // must be merged with the insert range.
+
+  if (start_pos == end_pos) {
+    // Insert between existing ranges at position start_pos.
+    if (start_pos < count) {
+      MoveRanges(list, start_pos, start_pos + 1, count - start_pos);
+    }
+    list->at(start_pos) = insert;
+    return count + 1;
+  }
+  if (start_pos + 1 == end_pos) {
+    // Replace single existing range at position start_pos.
+    CharacterRange to_replace = list->at(start_pos);
+    int new_from = Min(to_replace.from(), from);
+    int new_to = Max(to_replace.to(), to);
+    list->at(start_pos) = CharacterRange(new_from, new_to);
+    return count;
+  }
+  // Replace a number of existing ranges from start_pos to end_pos - 1.
+  // Move the remaining ranges down.
+
+  int new_from = Min(list->at(start_pos).from(), from);
+  int new_to = Max(list->at(end_pos - 1).to(), to);
+  if (end_pos < count) {
+    MoveRanges(list, end_pos, start_pos + 1, count - end_pos);
+  }
+  list->at(start_pos) = CharacterRange(new_from, new_to);
+  return count - (end_pos - start_pos) + 1;
+}
+
+
+void CharacterSet::Canonicalize() {
+  // Special/default classes are always considered canonical. The result
+  // of calling ranges() will be sorted.
+  if (ranges_ == NULL) return;
+  CharacterRange::Canonicalize(ranges_);
+}
+
+
+void CharacterRange::Canonicalize(ZoneList<CharacterRange>* character_ranges) {
+  if (character_ranges->length() <= 1) return;
+  // Check whether ranges are already canonical (increasing, non-overlapping,
+  // non-adjacent).
+  int n = character_ranges->length();
+  int max = character_ranges->at(0).to();
+  int i = 1;
+  while (i < n) {
+    CharacterRange current = character_ranges->at(i);
+    if (current.from() <= max + 1) {
+      break;
+    }
+    max = current.to();
+    i++;
+  }
+  // Canonical until the i'th range. If that's all of them, we are done.
+  if (i == n) return;
+
+  // The ranges at index i and forward are not canonicalized. Make them so by
+  // doing the equivalent of insertion sort (inserting each into the previous
+  // list, in order).
+  // Notice that inserting a range can reduce the number of ranges in the
+  // result due to combining of adjacent and overlapping ranges.
+  int read = i;  // Range to insert.
+  int num_canonical = i;  // Length of canonicalized part of list.
+  do {
+    num_canonical = InsertRangeInCanonicalList(character_ranges,
+                                               num_canonical,
+                                               character_ranges->at(read));
+    read++;
+  } while (read < n);
+  character_ranges->Rewind(num_canonical);
+
+  ASSERT(CharacterRange::IsCanonical(character_ranges));
+}
+
+
+// Utility function for CharacterRange::Merge. Adds a range at the end of
+// a canonicalized range list, if necessary merging the range with the last
+// range of the list.
+static void AddRangeToSet(ZoneList<CharacterRange>* set, CharacterRange range) {
+  if (set == NULL) return;
+  ASSERT(set->length() == 0 || set->at(set->length() - 1).to() < range.from());
+  int n = set->length();
+  if (n > 0) {
+    CharacterRange lastRange = set->at(n - 1);
+    if (lastRange.to() == range.from() - 1) {
+      set->at(n - 1) = CharacterRange(lastRange.from(), range.to());
+      return;
+    }
+  }
+  set->Add(range);
+}
+
+
+static void AddRangeToSelectedSet(int selector,
+                                  ZoneList<CharacterRange>* first_set,
+                                  ZoneList<CharacterRange>* second_set,
+                                  ZoneList<CharacterRange>* intersection_set,
+                                  CharacterRange range) {
+  switch (selector) {
+    case kInsideFirst:
+      AddRangeToSet(first_set, range);
+      break;
+    case kInsideSecond:
+      AddRangeToSet(second_set, range);
+      break;
+    case kInsideBoth:
+      AddRangeToSet(intersection_set, range);
+      break;
+  }
+}
+
+
+
+void CharacterRange::Merge(ZoneList<CharacterRange>* first_set,
+                           ZoneList<CharacterRange>* second_set,
+                           ZoneList<CharacterRange>* first_set_only_out,
+                           ZoneList<CharacterRange>* second_set_only_out,
+                           ZoneList<CharacterRange>* both_sets_out) {
+  // Inputs are canonicalized.
+  ASSERT(CharacterRange::IsCanonical(first_set));
+  ASSERT(CharacterRange::IsCanonical(second_set));
+  // Outputs are empty, if applicable.
+  ASSERT(first_set_only_out == NULL || first_set_only_out->length() == 0);
+  ASSERT(second_set_only_out == NULL || second_set_only_out->length() == 0);
+  ASSERT(both_sets_out == NULL || both_sets_out->length() == 0);
+
+  // Merge sets by iterating through the lists in order of lowest "from" value,
+  // and putting intervals into one of three sets.
+
+  if (first_set->length() == 0) {
+    second_set_only_out->AddAll(*second_set);
+    return;
+  }
+  if (second_set->length() == 0) {
+    first_set_only_out->AddAll(*first_set);
+    return;
+  }
+  // Indices into input lists.
+  int i1 = 0;
+  int i2 = 0;
+  // Cache length of input lists.
+  int n1 = first_set->length();
+  int n2 = second_set->length();
+  // Current range. May be invalid if state is kInsideNone.
+  int from = 0;
+  int to = -1;
+  // Where current range comes from.
+  int state = kInsideNone;
+
+  while (i1 < n1 || i2 < n2) {
+    CharacterRange next_range;
+    int range_source;
+    if (i2 == n2 ||
+        (i1 < n1 && first_set->at(i1).from() < second_set->at(i2).from())) {
+      // Next smallest element is in first set.
+      next_range = first_set->at(i1++);
+      range_source = kInsideFirst;
+    } else {
+      // Next smallest element is in second set.
+      next_range = second_set->at(i2++);
+      range_source = kInsideSecond;
+    }
+    if (to < next_range.from()) {
+      // Ranges disjoint: |current|  |next|
+      AddRangeToSelectedSet(state,
+                            first_set_only_out,
+                            second_set_only_out,
+                            both_sets_out,
+                            CharacterRange(from, to));
+      from = next_range.from();
+      to = next_range.to();
+      state = range_source;
+    } else {
+      if (from < next_range.from()) {
+        AddRangeToSelectedSet(state,
+                              first_set_only_out,
+                              second_set_only_out,
+                              both_sets_out,
+                              CharacterRange(from, next_range.from()-1));
+      }
+      if (to < next_range.to()) {
+        // Ranges overlap:  |current|
+        //                       |next|
+        AddRangeToSelectedSet(state | range_source,
+                              first_set_only_out,
+                              second_set_only_out,
+                              both_sets_out,
+                              CharacterRange(next_range.from(), to));
+        from = to + 1;
+        to = next_range.to();
+        state = range_source;
+      } else {
+        // Range included:    |current| , possibly ending at same character.
+        //                      |next|
+        AddRangeToSelectedSet(
+            state | range_source,
+            first_set_only_out,
+            second_set_only_out,
+            both_sets_out,
+            CharacterRange(next_range.from(), next_range.to()));
+        from = next_range.to() + 1;
+        // If ranges end at same character, both ranges are consumed completely.
+        if (next_range.to() == to) state = kInsideNone;
+      }
+    }
+  }
+  AddRangeToSelectedSet(state,
+                        first_set_only_out,
+                        second_set_only_out,
+                        both_sets_out,
+                        CharacterRange(from, to));
+}
+
+
+void CharacterRange::Negate(ZoneList<CharacterRange>* ranges,
+                            ZoneList<CharacterRange>* negated_ranges) {
+  ASSERT(CharacterRange::IsCanonical(ranges));
+  ASSERT_EQ(0, negated_ranges->length());
+  int range_count = ranges->length();
+  uc16 from = 0;
+  int i = 0;
+  if (range_count > 0 && ranges->at(0).from() == 0) {
+    from = ranges->at(0).to();
+    i = 1;
+  }
+  while (i < range_count) {
+    CharacterRange range = ranges->at(i);
+    negated_ranges->Add(CharacterRange(from + 1, range.from() - 1));
+    from = range.to();
+    i++;
+  }
+  if (from < String::kMaxUC16CharCode) {
+    negated_ranges->Add(CharacterRange(from + 1, String::kMaxUC16CharCode));
+  }
 }
 
 
@@ -4410,7 +4922,211 @@ void Analysis::VisitBackReference(BackReferenceNode* that) {
 
 void Analysis::VisitAssertion(AssertionNode* that) {
   EnsureAnalyzed(that->on_success());
+  AssertionNode::AssertionNodeType type = that->type();
+  if (type == AssertionNode::AT_BOUNDARY ||
+      type == AssertionNode::AT_NON_BOUNDARY) {
+    // Check if the following character is known to be a word character
+    // or known to not be a word character.
+    ZoneList<CharacterRange>* following_chars = that->FirstCharacterSet();
+
+    CharacterRange::Canonicalize(following_chars);
+
+    SetRelation word_relation =
+        CharacterRange::WordCharacterRelation(following_chars);
+    if (word_relation.Disjoint()) {
+      // Includes the case where following_chars is empty (e.g., end-of-input).
+      // Following character is definitely *not* a word character.
+      type = (type == AssertionNode::AT_BOUNDARY) ?
+                 AssertionNode::AFTER_WORD_CHARACTER :
+                 AssertionNode::AFTER_NONWORD_CHARACTER;
+      that->set_type(type);
+    } else if (word_relation.ContainedIn()) {
+      // Following character is definitely a word character.
+      type = (type == AssertionNode::AT_BOUNDARY) ?
+                 AssertionNode::AFTER_NONWORD_CHARACTER :
+                 AssertionNode::AFTER_WORD_CHARACTER;
+      that->set_type(type);
+    }
+  }
 }
+
+
+ZoneList<CharacterRange>* RegExpNode::FirstCharacterSet() {
+  if (first_character_set_ == NULL) {
+    if (ComputeFirstCharacterSet(kFirstCharBudget) < 0) {
+      // If we can't find an exact solution within the budget, we
+      // set the value to the set of every character, i.e., all characters
+      // are possible.
+      ZoneList<CharacterRange>* all_set = new ZoneList<CharacterRange>(1);
+      all_set->Add(CharacterRange::Everything());
+      first_character_set_ = all_set;
+    }
+  }
+  return first_character_set_;
+}
+
+
+int RegExpNode::ComputeFirstCharacterSet(int budget) {
+  // Default behavior is to not be able to determine the first character.
+  return kComputeFirstCharacterSetFail;
+}
+
+
+int LoopChoiceNode::ComputeFirstCharacterSet(int budget) {
+  budget--;
+  if (budget >= 0) {
+    // Find loop min-iteration. It's the value of the guarded choice node
+    // with a GEQ guard, if any.
+    int min_repetition = 0;
+
+    for (int i = 0; i <= 1; i++) {
+      GuardedAlternative alternative = alternatives()->at(i);
+      ZoneList<Guard*>* guards = alternative.guards();
+      if (guards != NULL && guards->length() > 0) {
+        Guard* guard = guards->at(0);
+        if (guard->op() == Guard::GEQ) {
+          min_repetition = guard->value();
+          break;
+        }
+      }
+    }
+
+    budget = loop_node()->ComputeFirstCharacterSet(budget);
+    if (budget >= 0) {
+      ZoneList<CharacterRange>* character_set =
+          loop_node()->first_character_set();
+      if (body_can_be_zero_length() || min_repetition == 0) {
+        budget = continue_node()->ComputeFirstCharacterSet(budget);
+        if (budget < 0) return budget;
+        ZoneList<CharacterRange>* body_set =
+            continue_node()->first_character_set();
+        ZoneList<CharacterRange>* union_set =
+          new ZoneList<CharacterRange>(Max(character_set->length(),
+                                           body_set->length()));
+        CharacterRange::Merge(character_set,
+                              body_set,
+                              union_set,
+                              union_set,
+                              union_set);
+        character_set = union_set;
+      }
+      set_first_character_set(character_set);
+    }
+  }
+  return budget;
+}
+
+
+int NegativeLookaheadChoiceNode::ComputeFirstCharacterSet(int budget) {
+  budget--;
+  if (budget >= 0) {
+    GuardedAlternative successor = this->alternatives()->at(1);
+    RegExpNode* successor_node = successor.node();
+    budget = successor_node->ComputeFirstCharacterSet(budget);
+    if (budget >= 0) {
+      set_first_character_set(successor_node->first_character_set());
+    }
+  }
+  return budget;
+}
+
+
+// The first character set of an EndNode is unknowable. Just use the
+// default implementation that fails and returns all characters as possible.
+
+
+int AssertionNode::ComputeFirstCharacterSet(int budget) {
+  budget -= 1;
+  if (budget >= 0) {
+    switch (type_) {
+      case AT_END: {
+        set_first_character_set(new ZoneList<CharacterRange>(0));
+        break;
+      }
+      case AT_START:
+      case AT_BOUNDARY:
+      case AT_NON_BOUNDARY:
+      case AFTER_NEWLINE:
+      case AFTER_NONWORD_CHARACTER:
+      case AFTER_WORD_CHARACTER: {
+        ASSERT_NOT_NULL(on_success());
+        budget = on_success()->ComputeFirstCharacterSet(budget);
+        if (budget >= 0) {
+          set_first_character_set(on_success()->first_character_set());
+        }
+        break;
+      }
+    }
+  }
+  return budget;
+}
+
+
+int ActionNode::ComputeFirstCharacterSet(int budget) {
+  if (type_ == POSITIVE_SUBMATCH_SUCCESS) return kComputeFirstCharacterSetFail;
+  budget--;
+  if (budget >= 0) {
+    ASSERT_NOT_NULL(on_success());
+    budget = on_success()->ComputeFirstCharacterSet(budget);
+    if (budget >= 0) {
+      set_first_character_set(on_success()->first_character_set());
+    }
+  }
+  return budget;
+}
+
+
+int BackReferenceNode::ComputeFirstCharacterSet(int budget) {
+  // We don't know anything about the first character of a backreference
+  // at this point.
+  // The potential first characters are the first characters of the capture,
+  // and the first characters of the on_success node, depending on whether the
+  // capture can be empty and whether it is known to be participating or known
+  // not to be.
+  return kComputeFirstCharacterSetFail;
+}
+
+
+int TextNode::ComputeFirstCharacterSet(int budget) {
+  budget--;
+  if (budget >= 0) {
+    ASSERT_NE(0, elements()->length());
+    TextElement text = elements()->at(0);
+    if (text.type == TextElement::ATOM) {
+      RegExpAtom* atom = text.data.u_atom;
+      ASSERT_NE(0, atom->length());
+      uc16 first_char = atom->data()[0];
+      ZoneList<CharacterRange>* range = new ZoneList<CharacterRange>(1);
+      range->Add(CharacterRange(first_char, first_char));
+      set_first_character_set(range);
+    } else {
+      ASSERT(text.type == TextElement::CHAR_CLASS);
+      RegExpCharacterClass* char_class = text.data.u_char_class;
+      ZoneList<CharacterRange>* ranges = char_class->ranges();
+      // TODO(lrn): Canonicalize ranges when they are created
+      // instead of waiting until now.
+      CharacterRange::Canonicalize(ranges);
+      if (char_class->is_negated()) {
+        int length = ranges->length();
+        int new_length = length + 1;
+        if (length > 0) {
+          if (ranges->at(0).from() == 0) new_length--;
+          if (ranges->at(length - 1).to() == String::kMaxUC16CharCode) {
+            new_length--;
+          }
+        }
+        ZoneList<CharacterRange>* negated_ranges =
+            new ZoneList<CharacterRange>(new_length);
+        CharacterRange::Negate(ranges, negated_ranges);
+        set_first_character_set(negated_ranges);
+      } else {
+        set_first_character_set(ranges);
+      }
+    }
+  }
+  return budget;
+}
+
 
 
 // -------------------------------------------------------------------
@@ -4469,7 +5185,6 @@ void DispatchTableConstructor::VisitAssertion(AssertionNode* that) {
   RegExpNode* target = that->on_success();
   target->Accept(this);
 }
-
 
 
 static int CompareRangeByFrom(const CharacterRange* a,
@@ -4544,7 +5259,10 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(RegExpCompileData* data,
                                                     &compiler,
                                                     compiler.accept());
   RegExpNode* node = captured_body;
-  if (!data->tree->IsAnchored()) {
+  bool is_end_anchored = data->tree->IsAnchoredAtEnd();
+  bool is_start_anchored = data->tree->IsAnchoredAtStart();
+  int max_length = data->tree->max_match();
+  if (!is_start_anchored) {
     // Add a .*? at the beginning, outside the body capture, unless
     // this expression is anchored at the beginning.
     RegExpNode* loop_node =
@@ -4579,7 +5297,7 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(RegExpCompileData* data,
   NodeInfo info = *node->info();
 
   // Create the correct assembler for the architecture.
-#ifdef V8_NATIVE_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
   // Native regexp implementation.
 
   NativeRegExpMacroAssembler::Mode mode =
@@ -4594,16 +5312,29 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(RegExpCompileData* data,
   RegExpMacroAssemblerARM macro_assembler(mode, (data->capture_count + 1) * 2);
 #endif
 
-#else  // ! V8_NATIVE_REGEXP
+#else  // V8_INTERPRETED_REGEXP
   // Interpreted regexp implementation.
   EmbeddedVector<byte, 1024> codes;
   RegExpMacroAssemblerIrregexp macro_assembler(codes);
-#endif
+#endif  // V8_INTERPRETED_REGEXP
+
+  // Inserted here, instead of in Assembler, because it depends on information
+  // in the AST that isn't replicated in the Node structure.
+  static const int kMaxBacksearchLimit = 1024;
+  if (is_end_anchored &&
+      !is_start_anchored &&
+      max_length < kMaxBacksearchLimit) {
+    macro_assembler.SetCurrentPositionFromEnd(max_length);
+  }
 
   return compiler.Assemble(&macro_assembler,
                            node,
                            data->capture_count,
                            pattern);
 }
+
+
+int OffsetsVector::static_offsets_vector_[
+    OffsetsVector::kStaticOffsetsVectorSize];
 
 }}  // namespace v8::internal

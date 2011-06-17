@@ -52,7 +52,7 @@ bool RegExpMacroAssembler::CanReadUnaligned() {
 }
 
 
-#ifdef V8_NATIVE_REGEXP  // Avoid unused code, e.g., on ARM.
+#ifndef V8_INTERPRETED_REGEXP  // Avoid unused code, e.g., on ARM.
 
 NativeRegExpMacroAssembler::NativeRegExpMacroAssembler() {
 }
@@ -120,13 +120,14 @@ NativeRegExpMacroAssembler::Result NativeRegExpMacroAssembler::Match(
   int start_offset = previous_index;
   int end_offset = subject_ptr->length();
 
-  bool is_ascii = subject->IsAsciiRepresentation();
-
+  // The string has been flattened, so it it is a cons string it contains the
+  // full string in the first part.
   if (StringShape(subject_ptr).IsCons()) {
+    ASSERT_EQ(0, ConsString::cast(subject_ptr)->second()->length());
     subject_ptr = ConsString::cast(subject_ptr)->first();
   }
   // Ensure that an underlying string has the same ascii-ness.
-  ASSERT(subject_ptr->IsAsciiRepresentation() == is_ascii);
+  bool is_ascii = subject_ptr->IsAsciiRepresentation();
   ASSERT(subject_ptr->IsExternalString() || subject_ptr->IsSeqString());
   // String is now either Sequential or External
   int char_size_shift = is_ascii ? 0 : 1;
@@ -141,19 +142,7 @@ NativeRegExpMacroAssembler::Result NativeRegExpMacroAssembler::Match(
                        start_offset,
                        input_start,
                        input_end,
-                       offsets_vector,
-                       previous_index == 0);
-
-  if (res == SUCCESS) {
-    // Capture values are relative to start_offset only.
-    // Convert them to be relative to start of string.
-    for (int i = 0; i < offsets_vector_length; i++) {
-      if (offsets_vector[i] >= 0) {
-        offsets_vector[i] += previous_index;
-      }
-    }
-  }
-
+                       offsets_vector);
   return res;
 }
 
@@ -164,26 +153,20 @@ NativeRegExpMacroAssembler::Result NativeRegExpMacroAssembler::Execute(
     int start_offset,
     const byte* input_start,
     const byte* input_end,
-    int* output,
-    bool at_start) {
-  typedef int (*matcher)(String*, int, const byte*,
-                         const byte*, int*, int, Address);
-  matcher matcher_func = FUNCTION_CAST<matcher>(code->entry());
-
-  int at_start_val = at_start ? 1 : 0;
-
+    int* output) {
   // Ensure that the minimum stack has been allocated.
   RegExpStack stack;
   Address stack_base = RegExpStack::stack_base();
 
-  int result = CALL_GENERATED_REGEXP_CODE(matcher_func,
+  int direct_call = 0;
+  int result = CALL_GENERATED_REGEXP_CODE(code->entry(),
                                           input,
                                           start_offset,
                                           input_start,
                                           input_end,
                                           output,
-                                          at_start_val,
-                                          stack_base);
+                                          stack_base,
+                                          direct_call);
   ASSERT(result <= SUCCESS);
   ASSERT(result >= RETRY);
 
@@ -197,6 +180,30 @@ NativeRegExpMacroAssembler::Result NativeRegExpMacroAssembler::Execute(
 
 
 static unibrow::Mapping<unibrow::Ecma262Canonicalize> canonicalize;
+
+
+byte NativeRegExpMacroAssembler::word_character_map[] = {
+    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+
+    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,  // '0' - '7'
+    0xffu, 0xffu, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,  // '8' - '9'
+
+    0x00u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,  // 'A' - 'G'
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,  // 'H' - 'O'
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,  // 'P' - 'W'
+    0xffu, 0xffu, 0xffu, 0x00u, 0x00u, 0x00u, 0x00u, 0xffu,  // 'X' - 'Z', '_'
+
+    0x00u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,  // 'a' - 'g'
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,  // 'h' - 'o'
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,  // 'p' - 'w'
+    0xffu, 0xffu, 0xffu, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,  // 'x' - 'z'
+};
+
 
 int NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16(
     Address byte_offset1,
@@ -245,5 +252,6 @@ Address NativeRegExpMacroAssembler::GrowStack(Address stack_pointer,
   return new_stack_base - stack_content_size;
 }
 
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
+
 } }  // namespace v8::internal

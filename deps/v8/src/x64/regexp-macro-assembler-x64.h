@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -31,7 +31,7 @@
 namespace v8 {
 namespace internal {
 
-#ifdef V8_NATIVE_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
 
 class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
  public:
@@ -73,8 +73,6 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // the end of the string.
   virtual void CheckPosition(int cp_offset, Label* on_outside_input);
   virtual bool CheckSpecialCharacterClass(uc16 type,
-                                          int cp_offset,
-                                          bool check_offset,
                                           Label* on_no_match);
   virtual void Fail();
   virtual Handle<Object> GetCode(Handle<String> source);
@@ -95,6 +93,7 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
                             StackCheckFlag check_stack_limit);
   virtual void ReadCurrentPositionFromRegister(int reg);
   virtual void ReadStackPointerFromRegister(int reg);
+  virtual void SetCurrentPositionFromEnd(int by);
   virtual void SetRegister(int register_index, int to);
   virtual void Succeed();
   virtual void WriteCurrentPositionToRegister(int reg, int cp_offset);
@@ -140,9 +139,9 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   static const int kInputStart = kStartIndex + kPointerSize;
   static const int kInputEnd = kInputStart + kPointerSize;
   static const int kRegisterOutput = kInputEnd + kPointerSize;
-  // AtStart is passed as 32 bit int (values 0 or 1).
-  static const int kAtStart = kRegisterOutput + kPointerSize;
-  static const int kStackHighEnd = kAtStart + kPointerSize;
+  static const int kStackHighEnd = kRegisterOutput + kPointerSize;
+  // DirectCall is passed as 32 bit int (values 0 or 1).
+  static const int kDirectCall = kStackHighEnd + kPointerSize;
 #else
   // In AMD64 ABI Calling Convention, the first six integer parameters
   // are passed as registers, and caller must allocate space on the stack
@@ -152,8 +151,8 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   static const int kInputStart = kStartIndex - kPointerSize;
   static const int kInputEnd = kInputStart - kPointerSize;
   static const int kRegisterOutput = kInputEnd - kPointerSize;
-  static const int kAtStart = kRegisterOutput - kPointerSize;
-  static const int kStackHighEnd = kFrameAlign;
+  static const int kStackHighEnd = kRegisterOutput - kPointerSize;
+  static const int kDirectCall = kFrameAlign;
 #endif
 
 #ifdef _WIN64
@@ -167,7 +166,7 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // AMD64 Calling Convention has only one callee-save register that
   // we use. We push this after the frame pointer (and after the
   // parameters).
-  static const int kBackup_rbx = kAtStart - kPointerSize;
+  static const int kBackup_rbx = kStackHighEnd - kPointerSize;
   static const int kLastCalleeSaveRegister = kBackup_rbx;
 #endif
 
@@ -248,21 +247,6 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // Increments the stack pointer (rcx) by a word size.
   inline void Drop();
 
-  // Before calling a C-function from generated code, align arguments on stack.
-  // After aligning the frame, arguments must be stored in esp[0], esp[4],
-  // etc., not pushed. The argument count assumes all arguments are word sized.
-  // Some compilers/platforms require the stack to be aligned when calling
-  // C++ code.
-  // Needs a scratch register to do some arithmetic. This register will be
-  // trashed.
-  inline void FrameAlign(int num_arguments);
-
-  // Calls a C function and cleans up the space for arguments allocated
-  // by FrameAlign. The called function is not allowed to trigger a garbage
-  // collection, since that might move the code and invalidate the return
-  // address (unless this is somehow accounted for by the called function).
-  inline void CallCFunction(ExternalReference function, int num_arguments);
-
   MacroAssembler* masm_;
 
   ZoneList<int> code_relative_fixup_positions_;
@@ -287,7 +271,7 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   Label stack_overflow_label_;
 };
 
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
 
 }}  // namespace v8::internal
 

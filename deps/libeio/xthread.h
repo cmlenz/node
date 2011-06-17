@@ -16,7 +16,10 @@
 /////////////////////////////////////////////////////////////////////////////
 
 #ifdef _WIN32
-typedef int ssize_t;
+
+#ifndef __MINGW32__
+typedef int ssize_t
+#endif
 
 #define NTDDI_VERSION NTDDI_WIN2K // needed to get win2000 api calls
 #define _WIN32_WINNT 0x400
@@ -29,29 +32,28 @@ typedef int ssize_t;
 #include <windows.h>
 #include <pthread.h>
 #define sigset_t int
-#define sigfillset(a)
 #define pthread_sigmask(a,b,c)
 #define sigaddset(a,b)
 #define sigemptyset(s)
 #define sigfillset(s)
 
-typedef pthread_mutex_t mutex_t;
+typedef pthread_mutex_t xmutex_t;
 #define X_MUTEX_INIT           PTHREAD_MUTEX_INITIALIZER
 #define X_LOCK(mutex)          pthread_mutex_lock (&(mutex))
 #define X_UNLOCK(mutex)        pthread_mutex_unlock (&(mutex))
 
-typedef pthread_cond_t cond_t;
+typedef pthread_cond_t xcond_t;
 #define X_COND_INIT                     PTHREAD_COND_INITIALIZER
 #define X_COND_SIGNAL(cond)             pthread_cond_signal (&(cond))
 #define X_COND_WAIT(cond,mutex)         pthread_cond_wait (&(cond), &(mutex))
 #define X_COND_TIMEDWAIT(cond,mutex,to) pthread_cond_timedwait (&(cond), &(mutex), &(to))
 
-typedef pthread_t thread_t;
+typedef pthread_t xthread_t;
 #define X_THREAD_PROC(name) void *name (void *thr_arg)
 #define X_THREAD_ATFORK(a,b,c)
 
 static int
-thread_create (thread_t *tid, void *(*proc)(void *), void *arg)
+thread_create (xthread_t *tid, void *(*proc)(void *), void *arg)
 {
   int retval;
   pthread_attr_t attr;
@@ -94,7 +96,7 @@ thread_create (thread_t *tid, void *(*proc)(void *), void *arg)
 #include <limits.h>
 #include <pthread.h>
 
-typedef pthread_mutex_t mutex_t;
+typedef pthread_mutex_t xmutex_t;
 #if __linux && defined (PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP)
 # define X_MUTEX_INIT PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP
 #else
@@ -103,13 +105,13 @@ typedef pthread_mutex_t mutex_t;
 #define X_LOCK(mutex)   pthread_mutex_lock   (&(mutex))
 #define X_UNLOCK(mutex) pthread_mutex_unlock (&(mutex))
 
-typedef pthread_cond_t cond_t;
+typedef pthread_cond_t xcond_t;
 #define X_COND_INIT PTHREAD_COND_INITIALIZER
 #define X_COND_SIGNAL(cond) pthread_cond_signal (&(cond))
 #define X_COND_WAIT(cond,mutex) pthread_cond_wait (&(cond), &(mutex))
 #define X_COND_TIMEDWAIT(cond,mutex,to) pthread_cond_timedwait (&(cond), &(mutex), &(to))
 
-typedef pthread_t thread_t;
+typedef pthread_t xthread_t;
 #define X_THREAD_PROC(name) static void *name (void *thr_arg)
 #define X_THREAD_ATFORK(prepare,parent,child) pthread_atfork (prepare, parent, child)
 
@@ -123,7 +125,7 @@ typedef pthread_t thread_t;
 #endif
 
 static int
-thread_create (thread_t *tid, void *(*proc)(void *), void *arg)
+thread_create (xthread_t *tid, void *(*proc)(void *), void *arg)
 {
   int retval;
   sigset_t fullsigset, oldsigset;

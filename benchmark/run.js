@@ -1,17 +1,16 @@
 var path = require("path");
-libDir = path.join(path.dirname(__filename), "../lib");
-require.paths.unshift(libDir);
-process.mixin(require("sys"));
-var benchmarks = [ "static_http_server.js" 
-                 , "timers.js"
+var util = require("util");
+var childProcess = require("child_process");
+var benchmarks = [ "timers.js"
                  , "process_loop.js"
+                 , "static_http_server.js"
                  ];
 
-var benchmark_dir = path.dirname(__filename);
+var benchmarkDir = path.dirname(__filename);
 
 function exec (script, callback) {
   var start = new Date();
-  var child = process.createChildProcess(process.ARGV[0], [path.join(benchmark_dir, script)]);
+  var child = childProcess.spawn(process.argv[0], [path.join(benchmarkDir, script)]);
   child.addListener("exit", function (code) {
     var elapsed = new Date() - start;
     callback(elapsed, code);
@@ -20,12 +19,12 @@ function exec (script, callback) {
 
 function runNext (i) {
   if (i >= benchmarks.length) return;
-  print(benchmarks[i] + ": ");
+  util.print(benchmarks[i] + ": ");
   exec(benchmarks[i], function (elapsed, code) {
     if (code != 0) {
-      puts("ERROR  ");
+      console.log("ERROR  ");
     }
-    puts(elapsed);
+    console.log(elapsed);
     runNext(i+1);
   });
 };

@@ -31,15 +31,32 @@
 # char arrays. It is used for embedded JavaScript code in the V8
 # library.
 
-import os, re, sys, string
+import os
+from os.path import dirname
+import re
+import sys
+import string
+
+sys.path.append(dirname(__file__) + "/../deps/v8/tools");
 import jsmin
 
 
-def ToCArray(lines):
+def ToCArray(filename, lines):
   result = []
+  row = 1
+  col = 0
   for chr in lines:
+    col += 1
+    if chr == "\n" or chr == "\r":
+      row += 1
+      col = 0
+
     value = ord(chr)
-    assert value < 128
+
+    if value >= 128:
+      print 'non-ascii value ' + filename + ':' + str(row) + ':' + str(col)
+      sys.exit(1);
+
     result.append(str(value))
   result.append("0")
   return ", ".join(result)
@@ -49,7 +66,8 @@ def CompressScript(lines, do_jsmin):
   # If we're not expecting this code to be user visible, we can run it through
   # a more aggressive minifier.
   if do_jsmin:
-    return jsmin.jsmin(lines)
+    minifier = JavaScriptMinifier()
+    return minifier.JSMinify(lines)
 
   # Remove stuff from the source that we don't want to appear when
   # people print the source code using Function.prototype.toString().
@@ -199,13 +217,31 @@ namespace node {
 
 %(source_lines)s\
 
+struct _native {
+  const char* name;
+  const char* source;
+  size_t source_len;
+};
+
+static const struct _native natives[] = {
+
+%(native_lines)s\
+
+  { NULL, NULL } /* sentinel */
+
+};
+
 }
 #endif
 """
 
 
+NATIVE_DECLARATION = """\
+  { "%(id)s", %(id)s_native, sizeof(%(id)s_native)-1 },
+"""
+
 SOURCE_DECLARATION = """\
-  static const char native_%(id)s[] = { %(data)s };
+  const char %(id)s_native[] = { %(data)s };
 """
 
 
@@ -230,6 +266,7 @@ def JS2C(source, target):
   # Locate the macros file name.
   consts = {}
   macros = {}
+
   for s in source:
     if 'macros.py' == (os.path.split(str(s))[1]):
       (consts, macros) = ReadMacros(ReadLines(str(s)))
@@ -239,14 +276,18 @@ def JS2C(source, target):
   # Build source code lines
   source_lines = [ ]
   source_lines_empty = []
+
+  native_lines = []
+
   for s in modules:
     delay = str(s).endswith('-delay.js')
     lines = ReadFile(str(s))
     do_jsmin = lines.find('// jsminify this file, js2c: jsmin') != -1
+
     lines = ExpandConstants(lines, consts)
     lines = ExpandMacros(lines, macros)
     lines = CompressScript(lines, do_jsmin)
-    data = ToCArray(lines)
+    data = ToCArray(s, lines)
     id = (os.path.split(str(s))[1])[:-3]
     if delay: id = id[:-6]
     if delay:
@@ -255,6 +296,7 @@ def JS2C(source, target):
       ids.append((id, len(lines)))
     source_lines.append(SOURCE_DECLARATION % { 'id': id, 'data': data })
     source_lines_empty.append(SOURCE_DECLARATION % { 'id': id, 'data': 0 })
+    native_lines.append(NATIVE_DECLARATION % { 'id': id })
   
   # Build delay support functions
   get_index_cases = [ ]
@@ -298,6 +340,7 @@ def JS2C(source, target):
     'builtin_count': len(ids) + len(delay_ids),
     'delay_count': len(delay_ids),
     'source_lines': "\n".join(source_lines),
+    'native_lines': "\n".join(native_lines),
     'get_index_cases': "".join(get_index_cases),
     'get_script_source_cases': "".join(get_script_source_cases),
     'get_script_name_cases': "".join(get_script_name_cases)
@@ -315,3 +358,11 @@ def JS2C(source, target):
       'get_script_name_cases': "".join(get_script_name_cases)
     })
     output.close()
+
+def main():
+  natives = sys.argv[1]
+  source_files = sys.argv[2:]
+  JS2C(source_files, [natives])
+
+if __name__ == "__main__":
+  main()

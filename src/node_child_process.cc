@@ -1,5 +1,26 @@
-// Copyright 2009 Ryan Dahl <ry@tinyclouds.org>
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 #include <node_child_process.h>
+#include <node.h>
 
 #include <assert.h>
 #include <string.h>
@@ -8,61 +29,103 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <pwd.h> /* getpwnam() */
+#include <grp.h> /* getgrnam() */
+#if defined(__FreeBSD__ ) || defined(__OpenBSD__)
+#include <sys/wait.h>
+#endif
+
+#include <sys/socket.h> /* socketpair */
+#include <sys/un.h>
+
+# ifdef __APPLE__
+# include <crt_externs.h>
+# define environ (*_NSGetEnviron())
+# else
+extern char **environ;
+# endif
+
+#include <limits.h> /* PATH_MAX */
 
 namespace node {
 
 using namespace v8;
 
-Persistent<FunctionTemplate> ChildProcess::constructor_template;
-
 static Persistent<String> pid_symbol;
-static Persistent<String> exit_symbol;
-static Persistent<String> output_symbol;
-static Persistent<String> error_symbol;
+static Persistent<String> onexit_symbol;
+
+
+// TODO share with other modules
+static inline int SetNonBlocking(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  int r = fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  if (r != 0) {
+    perror("SetNonBlocking()");
+  }
+  return r;
+}
+
+
+static inline int SetCloseOnExec(int fd) {
+  int flags = fcntl(fd, F_GETFD, 0);
+  int r = fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+  if (r != 0) {
+    perror("SetCloseOnExec()");
+  }
+  return r;
+}
+
+
+static inline int ResetFlags(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  // blocking
+  int r = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+  flags = fcntl(fd, F_GETFD, 0);
+  // unset the CLOEXEC
+  fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC);
+  return r;
+}
+
 
 void ChildProcess::Initialize(Handle<Object> target) {
   HandleScope scope;
 
   Local<FunctionTemplate> t = FunctionTemplate::New(ChildProcess::New);
-  constructor_template = Persistent<FunctionTemplate>::New(t);
-  constructor_template->Inherit(EventEmitter::constructor_template);
-  constructor_template->InstanceTemplate()->SetInternalFieldCount(1);
-  constructor_template->SetClassName(String::NewSymbol("ChildProcess"));
+  t->InstanceTemplate()->SetInternalFieldCount(1);
+  t->SetClassName(String::NewSymbol("ChildProcess"));
 
   pid_symbol = NODE_PSYMBOL("pid");
-  exit_symbol = NODE_PSYMBOL("exit");
-  output_symbol = NODE_PSYMBOL("output");
-  error_symbol = NODE_PSYMBOL("error");
+  onexit_symbol = NODE_PSYMBOL("onexit");
 
-  NODE_SET_PROTOTYPE_METHOD(constructor_template, "spawn", ChildProcess::Spawn);
-  NODE_SET_PROTOTYPE_METHOD(constructor_template, "write", ChildProcess::Write);
-  NODE_SET_PROTOTYPE_METHOD(constructor_template, "close", ChildProcess::Close);
-  NODE_SET_PROTOTYPE_METHOD(constructor_template, "kill", ChildProcess::Kill);
+  NODE_SET_PROTOTYPE_METHOD(t, "spawn", ChildProcess::Spawn);
+  NODE_SET_PROTOTYPE_METHOD(t, "kill", ChildProcess::Kill);
 
-  target->Set(String::NewSymbol("ChildProcess"),
-      constructor_template->GetFunction());
+  target->Set(String::NewSymbol("ChildProcess"), t->GetFunction());
 }
+
 
 Handle<Value> ChildProcess::New(const Arguments& args) {
   HandleScope scope;
-
   ChildProcess *p = new ChildProcess();
   p->Wrap(args.Holder());
-
   return args.This();
 }
+
 
 // This is an internal function. The third argument should be an array
 // of key value pairs seperated with '='.
 Handle<Value> ChildProcess::Spawn(const Arguments& args) {
   HandleScope scope;
 
-  if ( args.Length() != 3
-    || !args[0]->IsString()
-    || !args[1]->IsArray()
-    || !args[2]->IsArray()
-     )
-  {
+  if (args.Length() < 3 ||
+      !args[0]->IsString() ||
+      !args[1]->IsArray() ||
+      !args[2]->IsString() ||
+      !args[3]->IsArray() ||
+      !args[4]->IsArray() ||
+      !args[5]->IsBoolean() ||
+      !(args[6]->IsInt32() || args[6]->IsString()) ||
+      !(args[7]->IsInt32() || args[7]->IsString())) {
     return ThrowException(Exception::Error(String::New("Bad argument.")));
   }
 
@@ -86,20 +149,88 @@ Handle<Value> ChildProcess::Spawn(const Arguments& args) {
     argv[i+1] = strdup(*arg);
   }
 
-  // Copy third argument, args[2], into a c-string array called env.
-  Local<Array> env_handle = Local<Array>::Cast(args[2]);
+  // Copy third argument, args[2], into a c-string called cwd.
+  String::Utf8Value arg(args[2]->ToString());
+  char *cwd = strdup(*arg);
+
+  // Copy fourth argument, args[3], into a c-string array called env.
+  Local<Array> env_handle = Local<Array>::Cast(args[3]);
   int envc = env_handle->Length();
-  char **env = new char*[envc+1]; // heap allocated to detect errors
+  char **env = new char*[envc + 1]; // heap allocated to detect errors
   env[envc] = NULL;
   for (int i = 0; i < envc; i++) {
     String::Utf8Value pair(env_handle->Get(Integer::New(i))->ToString());
     env[i] = strdup(*pair);
   }
 
-  int r = child->Spawn(argv[0], argv, env);
+  int custom_fds[3] = { -1, -1, -1 };
+  if (args[4]->IsArray()) {
+    // Set the custom file descriptor values (if any) for the child process
+    Local<Array> custom_fds_handle = Local<Array>::Cast(args[4]);
+    int custom_fds_len = custom_fds_handle->Length();
+    for (int i = 0; i < custom_fds_len; i++) {
+      if (custom_fds_handle->Get(i)->IsUndefined()) continue;
+      Local<Integer> fd = custom_fds_handle->Get(i)->ToInteger();
+      custom_fds[i] = fd->Value();
+    }
+  }
+
+  int do_setsid = false;
+  if (args[5]->IsBoolean()) {
+    do_setsid = args[5]->BooleanValue();
+  }
+
+
+  int fds[3];
+
+  char *custom_uname = NULL;
+  int custom_uid = -1;
+  if (args[6]->IsNumber()) {
+    custom_uid = args[6]->Int32Value();
+  } else if (args[6]->IsString()) {
+    String::Utf8Value pwnam(args[6]->ToString());
+    custom_uname = (char *)calloc(sizeof(char), pwnam.length() + 1);
+    strncpy(custom_uname, *pwnam, pwnam.length() + 1);
+  } else {
+    return ThrowException(Exception::Error(
+      String::New("setuid argument must be a number or a string")));
+  }
+
+  char *custom_gname = NULL;
+  int custom_gid = -1;
+  if (args[7]->IsNumber()) {
+    custom_gid = args[7]->Int32Value();
+  } else if (args[7]->IsString()) {
+    String::Utf8Value grnam(args[7]->ToString());
+    custom_gname = (char *)calloc(sizeof(char), grnam.length() + 1);
+    strncpy(custom_gname, *grnam, grnam.length() + 1);
+  } else {
+    return ThrowException(Exception::Error(
+      String::New("setgid argument must be a number or a string")));
+  }
+
+  int channel_fd = -1;
+
+  int r = child->Spawn(argv[0],
+                       argv,
+                       cwd,
+                       env,
+                       fds,
+                       custom_fds,
+                       do_setsid,
+                       custom_uid,
+                       custom_uname,
+                       custom_gid,
+                       custom_gname,
+                       &channel_fd);
+
+  if (custom_uname != NULL) free(custom_uname);
+  if (custom_gname != NULL) free(custom_gname);
 
   for (i = 0; i < argv_length; i++) free(argv[i]);
   delete [] argv;
+
+  free(cwd);
 
   for (i = 0; i < envc; i++) free(env[i]);
   delete [] env;
@@ -108,290 +239,336 @@ Handle<Value> ChildProcess::Spawn(const Arguments& args) {
     return ThrowException(Exception::Error(String::New("Error spawning")));
   }
 
-  child->handle_->Set(pid_symbol, Integer::New(child->pid_));
 
-  return Undefined();
-}
+  Local<Array> a = Array::New(channel_fd >= 0 ? 4 : 3);
 
-Handle<Value> ChildProcess::Write(const Arguments& args) {
-  HandleScope scope;
-  ChildProcess *child = ObjectWrap::Unwrap<ChildProcess>(args.Holder());
-  assert(child);
+  assert(fds[0] >= 0);
+  a->Set(0, Integer::New(fds[0])); // stdin
+  assert(fds[1] >= 0);
+  a->Set(1, Integer::New(fds[1])); // stdout
+  assert(fds[2] >= 0);
+  a->Set(2, Integer::New(fds[2])); // stderr
 
-  enum encoding enc = ParseEncoding(args[1]);
-  ssize_t len = DecodeBytes(args[0], enc);
-
-  if (len < 0) {
-    Local<Value> exception = Exception::TypeError(String::New("Bad argument"));
-    return ThrowException(exception);
+  if (channel_fd >= 0) {
+    a->Set(3, Integer::New(channel_fd));
   }
 
-  char * buf = new char[len];
-  ssize_t written = DecodeWrite(buf, len, args[0], enc);
-  assert(written == len);
-  int r = child->Write(buf, len);
-  delete [] buf;
-
-  return r == 0 ? True() : False();
+  return scope.Close(a);
 }
+
 
 Handle<Value> ChildProcess::Kill(const Arguments& args) {
   HandleScope scope;
   ChildProcess *child = ObjectWrap::Unwrap<ChildProcess>(args.Holder());
   assert(child);
 
+  if (child->pid_ < 1) {
+    // nothing to do
+    return False();
+  }
+
   int sig = SIGTERM;
 
   if (args.Length() > 0) {
     if (args[0]->IsNumber()) {
       sig = args[0]->Int32Value();
-    } else if (args[0]->IsString()) {
-      Local<String> signame = args[0]->ToString();
-      Local<Object> process = Context::GetCurrent()->Global();
-      Local<Object> node_obj = process->Get(String::NewSymbol("node"))->ToObject();
-
-      Local<Value> sig_v = node_obj->Get(signame);
-      if (!sig_v->IsNumber()) {
-        return ThrowException(Exception::Error(String::New("Unknown signal")));
-      }
-      sig = sig_v->Int32Value();
+    } else {
+      return ThrowException(Exception::TypeError(String::New("Bad argument.")));
     }
   }
 
   if (child->Kill(sig) != 0) {
-    return ThrowException(Exception::Error(String::New(strerror(errno))));
+    return ThrowException(ErrnoException(errno, "Kill"));
   }
 
-  return Undefined();
+  return True();
 }
 
-Handle<Value> ChildProcess::Close(const Arguments& args) {
-  HandleScope scope;
-  ChildProcess *child = ObjectWrap::Unwrap<ChildProcess>(args.Holder());
-  assert(child);
-  return child->Close() == 0 ? True() : False();
-}
 
-void ChildProcess::reader_closed(evcom_reader *r) {
-  ChildProcess *child = static_cast<ChildProcess*>(r->data);
-  if (r == &child->stdout_reader_) {
-    child->stdout_fd_ = -1;
-  } else {
-    assert(r == &child->stderr_reader_);
-    child->stderr_fd_ = -1;
+void ChildProcess::Stop() {
+  if (ev_is_active(&child_watcher_)) {
+    ev_child_stop(EV_DEFAULT_UC_ &child_watcher_);
+    Unref();
   }
-  evcom_reader_detach(r);
-  child->MaybeShutdown();
+  // Don't kill the PID here. We want to allow for killing the parent
+  // process and reparenting to initd. This is perhaps not going the best
+  // technique for daemonizing, but I don't want to rule it out.
+  pid_ = -1;
 }
 
-void ChildProcess::stdin_closed(evcom_writer *w) {
-  ChildProcess *child = static_cast<ChildProcess*>(w->data);
-  assert(w == &child->stdin_writer_);
-  child->stdin_fd_ = -1;
-  evcom_writer_detach(w);
-  child->MaybeShutdown();
-}
-
-void ChildProcess::on_read(evcom_reader *r, const void *buf, size_t len) {
-  ChildProcess *child = static_cast<ChildProcess*>(r->data);
-  HandleScope scope;
-
-  bool isSTDOUT = (r == &child->stdout_reader_);
-  enum encoding encoding = isSTDOUT ?
-    child->stdout_encoding_ : child->stderr_encoding_;
-
-  Local<Value> data = Encode(buf, len, encoding);
-  child->Emit(isSTDOUT ? output_symbol : error_symbol, 1, &data);
-  child->MaybeShutdown();
-}
-
-ChildProcess::ChildProcess() : EventEmitter() {
-  evcom_reader_init(&stdout_reader_);
-  stdout_reader_.data     = this;
-  stdout_reader_.on_read  = on_read;
-  stdout_reader_.on_close = reader_closed;
-
-  evcom_reader_init(&stderr_reader_);
-  stderr_reader_.data     = this;
-  stderr_reader_.on_read  = on_read;
-  stderr_reader_.on_close = reader_closed;
-
-  evcom_writer_init(&stdin_writer_);
-  stdin_writer_.data      = this;
-  stdin_writer_.on_close  = stdin_closed;
-
-  ev_init(&child_watcher_, ChildProcess::OnCHLD);
-  child_watcher_.data = this;
-
-  stdout_fd_ = -1;
-  stderr_fd_ = -1;
-  stdin_fd_ = -1;
-
-  stdout_encoding_ = UTF8;
-  stderr_encoding_ = UTF8;
-
-  got_chld_ = false;
-  exit_code_ = 0;
-
-  pid_ = 0;
-}
-
-ChildProcess::~ChildProcess() {
-  Shutdown();
-}
-
-void ChildProcess::Shutdown() {
-  if (stdin_fd_ >= 0) {
-    evcom_writer_close(&stdin_writer_);
-  }
-
-  if (stdin_fd_  >= 0) close(stdin_fd_);
-  if (stdout_fd_ >= 0) close(stdout_fd_);
-  if (stderr_fd_ >= 0) close(stderr_fd_);
-
-  stdin_fd_ = -1;
-  stdout_fd_ = -1;
-  stderr_fd_ = -1;
-
-  evcom_writer_detach(&stdin_writer_);
-  evcom_reader_detach(&stdout_reader_);
-  evcom_reader_detach(&stderr_reader_);
-
-  ev_child_stop(EV_DEFAULT_UC_ &child_watcher_);
-
-  /* XXX Kill the PID? */
-  pid_ = 0;
-}
-
-static inline int SetNonBlocking(int fd) {
-  int flags = fcntl(fd, F_GETFL, 0);
-  int r = fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  if (r != 0) {
-    perror("SetNonBlocking()");
-  }
-  return r;
-}
 
 // Note that args[0] must be the same as the "file" param.  This is an
 // execvp() requirement.
-int ChildProcess::Spawn(const char *file, char *const args[], char *const env[]) {
-  assert(pid_ == 0);
-  assert(stdout_fd_ == -1);
-  assert(stderr_fd_ == -1);
-  assert(stdin_fd_ == -1);
+//
+// TODO: The arguments are rediculously long. Needs to be put into a struct.
+//
+int ChildProcess::Spawn(const char *file,
+                        char *const args[],
+                        const char *cwd,
+                        char **env,
+                        int stdio_fds[3],
+                        int custom_fds[3],
+                        bool do_setsid,
+                        int custom_uid,
+                        char *custom_uname,
+                        int custom_gid,
+                        char *custom_gname,
+                        int* channel) {
+  HandleScope scope;
+  assert(pid_ == -1);
+  assert(!ev_is_active(&child_watcher_));
 
-  int stdout_pipe[2], stdin_pipe[2], stderr_pipe[2];
+  int stdin_pipe[2], stdout_pipe[2], stderr_pipe[2];
 
   /* An implementation of popen(), basically */
-  if (pipe(stdout_pipe) < 0) {
+  if ((custom_fds[0] == -1 && pipe(stdin_pipe) < 0) ||
+      (custom_fds[1] == -1 && pipe(stdout_pipe) < 0) ||
+      (custom_fds[2] == -1 && pipe(stderr_pipe) < 0)) {
     perror("pipe()");
     return -1;
   }
 
-  if (pipe(stderr_pipe) < 0) {
-    perror("pipe()");
-    return -2;
+  // Set the close-on-exec FD flag
+  if (custom_fds[0] == -1) {
+    SetCloseOnExec(stdin_pipe[0]);
+    SetCloseOnExec(stdin_pipe[1]);
   }
 
-  if (pipe(stdin_pipe) < 0) {
-    perror("pipe()");
-    return -3;
+  if (custom_fds[1] == -1) {
+    SetCloseOnExec(stdout_pipe[0]);
+    SetCloseOnExec(stdout_pipe[1]);
   }
 
-  switch (pid_ = vfork()) {
+  if (custom_fds[2] == -1) {
+    SetCloseOnExec(stderr_pipe[0]);
+    SetCloseOnExec(stderr_pipe[1]);
+  }
+
+
+  // The channel will be used by js-land "fork()" for a little JSON channel.
+  // The pointer is used to pass one end of the socket pair back to the
+  // parent.
+  // channel_fds[0] is for the parent
+  // channel_fds[1] is for the child
+  int channel_fds[2] = { -1, -1 };
+
+#define NODE_CHANNEL_FD "NODE_CHANNEL_FD"
+
+  for (int i = 0; env[i]; i++) {
+    if (!strncmp(env[i], NODE_CHANNEL_FD, sizeof NODE_CHANNEL_FD - 1)) {
+      if (socketpair(AF_UNIX, SOCK_STREAM, 0, channel_fds)) {
+        perror("socketpair()");
+        return -1;
+      }
+
+      assert(channel_fds[0] >= 0 && channel_fds[1] >= 0);
+
+      SetNonBlocking(channel_fds[0]);
+      SetNonBlocking(channel_fds[1]);
+      // Write over the FILLMEIN :D
+      sprintf(env[i], NODE_CHANNEL_FD "=%d", channel_fds[1]);
+    }
+  }
+
+  // Save environ in the case that we get it clobbered
+  // by the child process.
+  char **save_our_env = environ;
+
+  switch (pid_ = fork()) {
     case -1:  // Error.
-      Shutdown();
+      Stop();
       return -4;
 
     case 0:  // Child.
-      close(stdout_pipe[0]);  // close read end
-      dup2(stdout_pipe[1], STDOUT_FILENO);
+      if (do_setsid && setsid() < 0) {
+        perror("setsid");
+        _exit(127);
+      }
 
-      close(stderr_pipe[0]);  // close read end
-      dup2(stderr_pipe[1], STDERR_FILENO);
+      if (custom_fds[0] == -1) {
+        close(stdin_pipe[1]);  // close write end
+        dup2(stdin_pipe[0],  STDIN_FILENO);
+      } else {
+        ResetFlags(custom_fds[0]);
+        dup2(custom_fds[0], STDIN_FILENO);
+      }
 
-      close(stdin_pipe[1]);  // close write end
-      dup2(stdin_pipe[0],  STDIN_FILENO);
+      if (custom_fds[1] == -1) {
+        close(stdout_pipe[0]);  // close read end
+        dup2(stdout_pipe[1], STDOUT_FILENO);
+      } else {
+        ResetFlags(custom_fds[1]);
+        dup2(custom_fds[1], STDOUT_FILENO);
+      }
+
+      if (custom_fds[2] == -1) {
+        close(stderr_pipe[0]);  // close read end
+        dup2(stderr_pipe[1], STDERR_FILENO);
+      } else {
+        ResetFlags(custom_fds[2]);
+        dup2(custom_fds[2], STDERR_FILENO);
+      }
+
+      if (strlen(cwd) && chdir(cwd)) {
+        perror("chdir()");
+        _exit(127);
+      }
+
+
+      static char buf[PATH_MAX + 1];
+
+      int gid = -1;
+      if (custom_gid != -1) {
+        gid = custom_gid;
+      } else if (custom_gname != NULL) {
+        struct group grp, *grpp = NULL;
+        int err = getgrnam_r(custom_gname,
+                             &grp,
+                             buf,
+                             PATH_MAX + 1,
+                             &grpp);
+
+        if (err || grpp == NULL) {
+          perror("getgrnam_r()");
+          _exit(127);
+        }
+
+        gid = grpp->gr_gid;
+      }
+
+
+      int uid = -1;
+      if (custom_uid != -1) {
+        uid = custom_uid;
+      } else if (custom_uname != NULL) {
+        struct passwd pwd, *pwdp = NULL;
+        int err = getpwnam_r(custom_uname,
+                             &pwd,
+                             buf,
+                             PATH_MAX + 1,
+                             &pwdp);
+
+        if (err || pwdp == NULL) {
+          perror("getpwnam_r()");
+          _exit(127);
+        }
+
+        uid = pwdp->pw_uid;
+      }
+
+
+      if (gid != -1 && setgid(gid)) {
+        perror("setgid()");
+        _exit(127);
+      }
+
+      if (uid != -1 && setuid(uid)) {
+        perror("setuid()");
+        _exit(127);
+      }
+
+      // Close the parent's end of the channel.
+      if (channel_fds[0] >= 0) {
+        close(channel_fds[0]);
+        channel_fds[0] = -1;
+      }
+
+      environ = env;
 
       execvp(file, args);
       perror("execvp()");
       _exit(127);
-
-      // TODO search PATH and use: execve(file, argv, env);
   }
 
   // Parent.
 
+  // Restore environment.
+  environ = save_our_env;
+
   ev_child_set(&child_watcher_, pid_, 0);
   ev_child_start(EV_DEFAULT_UC_ &child_watcher_);
-
-  close(stdout_pipe[1]);
-  stdout_fd_ = stdout_pipe[0];
-  SetNonBlocking(stdout_fd_);
-
-  close(stderr_pipe[1]);
-  stderr_fd_ = stderr_pipe[0];
-  SetNonBlocking(stderr_fd_);
-
-  close(stdin_pipe[0]);
-  stdin_fd_ = stdin_pipe[1];
-  SetNonBlocking(stdin_fd_);
-
-  evcom_reader_set(&stdout_reader_, stdout_fd_);
-  evcom_reader_attach(EV_DEFAULT_UC_ &stdout_reader_);
-
-  evcom_reader_set(&stderr_reader_, stderr_fd_);
-  evcom_reader_attach(EV_DEFAULT_UC_ &stderr_reader_);
-
-  evcom_writer_set(&stdin_writer_, stdin_fd_);
-  evcom_writer_attach(EV_DEFAULT_UC_ &stdin_writer_);
-
   Ref();
+  handle_->Set(pid_symbol, Integer::New(pid_));
+
+  if (custom_fds[0] == -1) {
+    close(stdin_pipe[0]);
+    stdio_fds[0] = stdin_pipe[1];
+    SetNonBlocking(stdin_pipe[1]);
+  } else {
+    stdio_fds[0] = custom_fds[0];
+  }
+
+  if (custom_fds[1] == -1) {
+    close(stdout_pipe[1]);
+    stdio_fds[1] = stdout_pipe[0];
+    SetNonBlocking(stdout_pipe[0]);
+  } else {
+    stdio_fds[1] = custom_fds[1];
+  }
+
+  if (custom_fds[2] == -1) {
+    close(stderr_pipe[1]);
+    stdio_fds[2] = stderr_pipe[0];
+    SetNonBlocking(stderr_pipe[0]);
+  } else {
+    stdio_fds[2] = custom_fds[2];
+  }
+
+  // Close the child's end of the channel.
+  if (channel_fds[1] >= 0) {
+    close(channel_fds[1]);
+    channel_fds[1] = -1;
+    assert(channel_fds[0] >= 0);
+    assert(channel);
+    *channel = channel_fds[0];
+  } else {
+    *channel = -1;
+  }
 
   return 0;
 }
 
-void ChildProcess::OnCHLD(EV_P_ ev_child *watcher, int revents) {
-  ev_child_stop(EV_A_ watcher);
-  ChildProcess *child = static_cast<ChildProcess*>(watcher->data);
 
-  assert(revents == EV_CHILD);
-  assert(child->pid_ == watcher->rpid);
-  assert(&child->child_watcher_ == watcher);
+void ChildProcess::OnExit(int status) {
+  HandleScope scope;
 
-  child->got_chld_ = true;
-  child->exit_code_ = watcher->rstatus;
+  pid_ = -1;
+  Stop();
 
-  if (child->stdin_fd_  >= 0) evcom_writer_close(&child->stdin_writer_);
+  handle_->Set(pid_symbol, Null());
 
-  child->MaybeShutdown();
-}
+  Local<Value> onexit_v = handle_->Get(onexit_symbol);
+  assert(onexit_v->IsFunction());
+  Local<Function> onexit = Local<Function>::Cast(onexit_v);
 
-int ChildProcess::Write(const char *str, size_t len) {
-  if (stdin_fd_ < 0 || got_chld_) return -1;
-  evcom_writer_write(&stdin_writer_, str, len);
-  return 0;
-}
+  TryCatch try_catch;
 
-int ChildProcess::Close(void) {
-  if (stdin_fd_ < 0 || got_chld_) return -1;
-  evcom_writer_close(&stdin_writer_);
-  return 0;
-}
+  Local<Value> argv[2];
+  if (WIFEXITED(status)) {
+    argv[0] = Integer::New(WEXITSTATUS(status));
+  } else {
+    argv[0] = Local<Value>::New(Null());
+  }
 
-int ChildProcess::Kill(int sig) {
-  if (got_chld_ || pid_ == 0) return -1;
-  return kill(pid_, sig);
-}
+  if (WIFSIGNALED(status)) {
+    argv[1] = String::NewSymbol(signo_string(WTERMSIG(status)));
+  } else {
+    argv[1] = Local<Value>::New(Null());
+  }
 
-void ChildProcess::MaybeShutdown(void) {
-  if (stdout_fd_ < 0 && stderr_fd_ < 0 && got_chld_) {
-    HandleScope scope;
-    Handle<Value> argv[1] = { Integer::New(exit_code_) };
-    Emit(exit_symbol, 1, argv);
-    Shutdown();
-    Unref();
+  onexit->Call(handle_, 2, argv);
+
+  if (try_catch.HasCaught()) {
+    FatalException(try_catch);
   }
 }
 
+
+int ChildProcess::Kill(int sig) {
+  if (pid_ < 1) return -1;
+  return kill(pid_, sig);
+}
+
 }  // namespace node
+
+NODE_MODULE(node_child_process, node::ChildProcess::Initialize);

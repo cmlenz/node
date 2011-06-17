@@ -37,9 +37,8 @@ HARNESS_FILES = ['sth.js']
 class ES5ConformTestCase(test.TestCase):
 
   def __init__(self, filename, path, context, root, mode, framework):
-    super(ES5ConformTestCase, self).__init__(context, path)
+    super(ES5ConformTestCase, self).__init__(context, path, mode)
     self.filename = filename
-    self.mode = mode
     self.framework = framework
     self.root = root
 
@@ -55,7 +54,7 @@ class ES5ConformTestCase(test.TestCase):
     return 'FAILED!' in output.stdout
 
   def GetCommand(self):
-    result = [self.context.GetVm(self.mode)]
+    result = self.context.GetVmCommand(self, self.mode)
     result += ['-e', 'var window = this']
     result += self.framework
     result.append(self.filename)
@@ -83,8 +82,10 @@ class ES5ConformTestConfiguration(test.TestConfiguration):
     for root, dirs, files in os.walk(current_root):
       for dotted in [x  for x in dirs if x.startswith('.')]:
         dirs.remove(dotted)
+      dirs.sort()
       root_path = root[len(self.root):].split(os.path.sep)
       root_path = current_path + [x for x in root_path if x]
+      files.sort()
       for file in files:
         if file.endswith('.js'):
           full_path = root_path + [file[:-3]]

@@ -227,10 +227,10 @@ void PrettyPrinter::VisitFunctionLiteral(FunctionLiteral* node) {
 }
 
 
-void PrettyPrinter::VisitFunctionBoilerplateLiteral(
-    FunctionBoilerplateLiteral* node) {
+void PrettyPrinter::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* node) {
   Print("(");
-  PrintLiteral(node->boilerplate(), true);
+  PrintLiteral(node->shared_function_info(), true);
   Print(")");
 }
 
@@ -297,13 +297,13 @@ void PrettyPrinter::VisitSlot(Slot* node) {
       Print("parameter[%d]", node->index());
       break;
     case Slot::LOCAL:
-      Print("frame[%d]", node->index());
+      Print("local[%d]", node->index());
       break;
     case Slot::CONTEXT:
-      Print(".context[%d]", node->index());
+      Print("context[%d]", node->index());
       break;
     case Slot::LOOKUP:
-      Print(".context[");
+      Print("lookup[");
       PrintLiteral(node->var()->name(), false);
       Print("]");
       break;
@@ -376,6 +376,11 @@ void PrettyPrinter::VisitUnaryOperation(UnaryOperation* node) {
 }
 
 
+void PrettyPrinter::VisitIncrementOperation(IncrementOperation* node) {
+  UNREACHABLE();
+}
+
+
 void PrettyPrinter::VisitCountOperation(CountOperation* node) {
   Print("(");
   if (node->is_prefix()) Print("%s", Token::String(node->op()));
@@ -400,6 +405,13 @@ void PrettyPrinter::VisitCompareOperation(CompareOperation* node) {
   Print("%s", Token::String(node->op()));
   Visit(node->right());
   Print(")");
+}
+
+
+void PrettyPrinter::VisitCompareToNull(CompareToNull* node) {
+  Print("(");
+  Visit(node->expression());
+  Print("%s null)", Token::String(node->op()));
 }
 
 
@@ -594,12 +606,17 @@ class IndentedScope BASE_EMBEDDED {
     ast_printer_->inc_indent();
   }
 
-  explicit IndentedScope(const char* txt, SmiAnalysis* type = NULL) {
+  explicit IndentedScope(const char* txt, AstNode* node = NULL) {
     ast_printer_->PrintIndented(txt);
-    if ((type != NULL) && (type->IsKnown())) {
-      ast_printer_->Print(" (type = ");
-      ast_printer_->Print(SmiAnalysis::Type2String(type));
-      ast_printer_->Print(")");
+    if (node != NULL && node->AsExpression() != NULL) {
+      Expression* expr = node->AsExpression();
+      bool printed_first = false;
+      if ((expr->type() != NULL) && (expr->type()->IsKnown())) {
+        ast_printer_->Print(" (type = ");
+        ast_printer_->Print(StaticType::Type2String(expr->type()));
+        printed_first = true;
+      }
+      if (printed_first) ast_printer_->Print(")");
     }
     ast_printer_->Print("\n");
     ast_printer_->inc_indent();
@@ -657,19 +674,18 @@ void AstPrinter::PrintLiteralIndented(const char* info,
 void AstPrinter::PrintLiteralWithModeIndented(const char* info,
                                               Variable* var,
                                               Handle<Object> value,
-                                              SmiAnalysis* type) {
+                                              StaticType* type) {
   if (var == NULL) {
     PrintLiteralIndented(info, value, true);
   } else {
     EmbeddedVector<char, 256> buf;
+    int pos = OS::SNPrintF(buf, "%s (mode = %s", info,
+                           Variable::Mode2String(var->mode()));
     if (type->IsKnown()) {
-      OS::SNPrintF(buf, "%s (mode = %s, type = %s)", info,
-                   Variable::Mode2String(var->mode()),
-                   SmiAnalysis::Type2String(type));
-    } else {
-      OS::SNPrintF(buf, "%s (mode = %s)", info,
-                   Variable::Mode2String(var->mode()));
+      pos += OS::SNPrintF(buf + pos, ", type = %s",
+                          StaticType::Type2String(type));
     }
+    OS::SNPrintF(buf + pos, ")");
     PrintLiteralIndented(buf.start(), value, true);
   }
 }
@@ -692,7 +708,7 @@ void AstPrinter::PrintLabelsIndented(const char* info, ZoneStringList* labels) {
 
 
 void AstPrinter::PrintIndentedVisit(const char* s, AstNode* node) {
-  IndentedScope indent(s);
+  IndentedScope indent(s, node);
   Visit(node);
 }
 
@@ -903,10 +919,10 @@ void AstPrinter::VisitFunctionLiteral(FunctionLiteral* node) {
 }
 
 
-void AstPrinter::VisitFunctionBoilerplateLiteral(
-    FunctionBoilerplateLiteral* node) {
+void AstPrinter::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* node) {
   IndentedScope indent("FUNC LITERAL");
-  PrintLiteralIndented("BOILERPLATE", node->boilerplate(), true);
+  PrintLiteralIndented("SHARED INFO", node->shared_function_info(), true);
 }
 
 
@@ -983,24 +999,7 @@ void AstPrinter::VisitCatchExtensionObject(CatchExtensionObject* node) {
 
 void AstPrinter::VisitSlot(Slot* node) {
   PrintIndented("SLOT ");
-  switch (node->type()) {
-    case Slot::PARAMETER:
-      Print("parameter[%d]", node->index());
-      break;
-    case Slot::LOCAL:
-      Print("frame[%d]", node->index());
-      break;
-    case Slot::CONTEXT:
-      Print(".context[%d]", node->index());
-      break;
-    case Slot::LOOKUP:
-      Print(".context[");
-      PrintLiteral(node->var()->name(), false);
-      Print("]");
-      break;
-    default:
-      UNREACHABLE();
-  }
+  PrettyPrinter::VisitSlot(node);
   Print("\n");
 }
 
@@ -1017,7 +1016,7 @@ void AstPrinter::VisitVariableProxy(VariableProxy* node) {
 
 
 void AstPrinter::VisitAssignment(Assignment* node) {
-  IndentedScope indent(Token::Name(node->op()), node->type());
+  IndentedScope indent(Token::Name(node->op()), node);
   Visit(node->target());
   Visit(node->value());
 }
@@ -1029,7 +1028,7 @@ void AstPrinter::VisitThrow(Throw* node) {
 
 
 void AstPrinter::VisitProperty(Property* node) {
-  IndentedScope indent("PROPERTY");
+  IndentedScope indent("PROPERTY", node);
   Visit(node->obj());
   Literal* literal = node->key()->AsLiteral();
   if (literal != NULL && literal->handle()->IsSymbol()) {
@@ -1066,13 +1065,18 @@ void AstPrinter::VisitUnaryOperation(UnaryOperation* node) {
 }
 
 
+void AstPrinter::VisitIncrementOperation(IncrementOperation* node) {
+  UNREACHABLE();
+}
+
+
 void AstPrinter::VisitCountOperation(CountOperation* node) {
   EmbeddedVector<char, 128> buf;
   if (node->type()->IsKnown()) {
     OS::SNPrintF(buf, "%s %s (type = %s)",
                  (node->is_prefix() ? "PRE" : "POST"),
                  Token::Name(node->op()),
-                 SmiAnalysis::Type2String(node->type()));
+                 StaticType::Type2String(node->type()));
   } else {
     OS::SNPrintF(buf, "%s %s", (node->is_prefix() ? "PRE" : "POST"),
                  Token::Name(node->op()));
@@ -1082,16 +1086,25 @@ void AstPrinter::VisitCountOperation(CountOperation* node) {
 
 
 void AstPrinter::VisitBinaryOperation(BinaryOperation* node) {
-  IndentedScope indent(Token::Name(node->op()), node->type());
+  IndentedScope indent(Token::Name(node->op()), node);
   Visit(node->left());
   Visit(node->right());
 }
 
 
 void AstPrinter::VisitCompareOperation(CompareOperation* node) {
-  IndentedScope indent(Token::Name(node->op()), node->type());
+  IndentedScope indent(Token::Name(node->op()), node);
   Visit(node->left());
   Visit(node->right());
+}
+
+
+void AstPrinter::VisitCompareToNull(CompareToNull* node) {
+  const char* name = node->is_strict()
+      ? "COMPARE-TO-NULL-STRICT"
+      : "COMPARE-TO-NULL";
+  IndentedScope indent(name, node);
+  Visit(node->expression());
 }
 
 
@@ -1311,9 +1324,9 @@ void JsonAstBuilder::VisitFunctionLiteral(FunctionLiteral* expr) {
 }
 
 
-void JsonAstBuilder::VisitFunctionBoilerplateLiteral(
-    FunctionBoilerplateLiteral* expr) {
-  TagScope tag(this, "FunctionBoilerplateLiteral");
+void JsonAstBuilder::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* expr) {
+  TagScope tag(this, "SharedFunctionInfoLiteral");
 }
 
 
@@ -1457,6 +1470,11 @@ void JsonAstBuilder::VisitUnaryOperation(UnaryOperation* expr) {
 }
 
 
+void JsonAstBuilder::VisitIncrementOperation(IncrementOperation* expr) {
+  UNREACHABLE();
+}
+
+
 void JsonAstBuilder::VisitCountOperation(CountOperation* expr) {
   TagScope tag(this, "CountOperation");
   {
@@ -1487,6 +1505,16 @@ void JsonAstBuilder::VisitCompareOperation(CompareOperation* expr) {
   }
   Visit(expr->left());
   Visit(expr->right());
+}
+
+
+void JsonAstBuilder::VisitCompareToNull(CompareToNull* expr) {
+  TagScope tag(this, "CompareToNull");
+  {
+    AttributesScope attributes(this);
+    AddAttribute("is_strict", expr->is_strict());
+  }
+  Visit(expr->expression());
 }
 
 

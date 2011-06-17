@@ -28,6 +28,8 @@
 #ifndef V8_REGEXP_MACRO_ASSEMBLER_H_
 #define V8_REGEXP_MACRO_ASSEMBLER_H_
 
+#include "ast.h"
+
 namespace v8 {
 namespace internal {
 
@@ -71,11 +73,11 @@ class RegExpMacroAssembler {
   virtual void CheckAtStart(Label* on_at_start) = 0;
   // Dispatch after looking the current character up in a 2-bits-per-entry
   // map.  The destinations vector has up to 4 labels.
-  virtual void CheckCharacter(uint32_t c, Label* on_equal) = 0;
+  virtual void CheckCharacter(unsigned c, Label* on_equal) = 0;
   // Bitwise and the current character with the given constant and then
   // check for a match with c.
-  virtual void CheckCharacterAfterAnd(uint32_t c,
-                                      uint32_t and_with,
+  virtual void CheckCharacterAfterAnd(unsigned c,
+                                      unsigned and_with,
                                       Label* on_equal) = 0;
   virtual void CheckCharacterGT(uc16 limit, Label* on_greater) = 0;
   virtual void CheckCharacterLT(uc16 limit, Label* on_less) = 0;
@@ -99,9 +101,9 @@ class RegExpMacroAssembler {
   // fail to match then goto the on_failure label.  End of input always
   // matches.  If the label is NULL then we should pop a backtrack address off
   // the stack and go to that.
-  virtual void CheckNotCharacter(uint32_t c, Label* on_not_equal) = 0;
-  virtual void CheckNotCharacterAfterAnd(uint32_t c,
-                                         uint32_t and_with,
+  virtual void CheckNotCharacter(unsigned c, Label* on_not_equal) = 0;
+  virtual void CheckNotCharacterAfterAnd(unsigned c,
+                                         unsigned and_with,
                                          Label* on_not_equal) = 0;
   // Subtract a constant from the current character, then or with the given
   // constant and then check for a match with c.
@@ -123,8 +125,6 @@ class RegExpMacroAssembler {
   // not have custom support.
   // May clobber the current loaded character.
   virtual bool CheckSpecialCharacterClass(uc16 type,
-                                          int cp_offset,
-                                          bool check_offset,
                                           Label* on_no_match) {
     return false;
   }
@@ -155,6 +155,7 @@ class RegExpMacroAssembler {
                             StackCheckFlag check_stack_limit) = 0;
   virtual void ReadCurrentPositionFromRegister(int reg) = 0;
   virtual void ReadStackPointerFromRegister(int reg) = 0;
+  virtual void SetCurrentPositionFromEnd(int by) = 0;
   virtual void SetRegister(int register_index, int to) = 0;
   virtual void Succeed() = 0;
   virtual void WriteCurrentPositionToRegister(int reg, int cp_offset) = 0;
@@ -163,7 +164,7 @@ class RegExpMacroAssembler {
 };
 
 
-#ifdef V8_NATIVE_REGEXP  // Avoid compiling unused code.
+#ifndef V8_INTERPRETED_REGEXP  // Avoid compiling unused code.
 
 class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
  public:
@@ -206,16 +207,24 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
 
   static const byte* StringCharacterPosition(String* subject, int start_index);
 
+  // Byte map of ASCII characters with a 0xff if the character is a word
+  // character (digit, letter or underscore) and 0x00 otherwise.
+  // Used by generated RegExp code.
+  static byte word_character_map[128];
+
+  static Address word_character_map_address() {
+    return &word_character_map[0];
+  }
+
   static Result Execute(Code* code,
                         String* input,
                         int start_offset,
                         const byte* input_start,
                         const byte* input_end,
-                        int* output,
-                        bool at_start);
+                        int* output);
 };
 
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
 
 } }  // namespace v8::internal
 

@@ -75,16 +75,52 @@ Code* IC::GetTargetAtAddress(Address address) {
 
 
 void IC::SetTargetAtAddress(Address address, Code* target) {
-  ASSERT(target->is_inline_cache_stub());
+  ASSERT(target->is_inline_cache_stub() || target->is_compare_ic_stub());
+#ifdef DEBUG
+  // STORE_IC and KEYED_STORE_IC use Code::extra_ic_state() to mark
+  // ICs as strict mode. The strict-ness of the IC must be preserved.
+  Code* old_target = GetTargetAtAddress(address);
+  if (old_target->kind() == Code::STORE_IC ||
+      old_target->kind() == Code::KEYED_STORE_IC) {
+    ASSERT(old_target->extra_ic_state() == target->extra_ic_state());
+  }
+#endif
   Assembler::set_target_address_at(address, target->instruction_start());
 }
 
 
-Map* IC::GetCodeCacheMapForObject(Object* object) {
-  if (object->IsJSObject()) return JSObject::cast(object)->map();
+InlineCacheHolderFlag IC::GetCodeCacheForObject(Object* object,
+                                                JSObject* holder) {
+  if (object->IsJSObject()) {
+    return GetCodeCacheForObject(JSObject::cast(object), holder);
+  }
   // If the object is a value, we use the prototype map for the cache.
   ASSERT(object->IsString() || object->IsNumber() || object->IsBoolean());
-  return JSObject::cast(object->GetPrototype())->map();
+  return PROTOTYPE_MAP;
+}
+
+
+InlineCacheHolderFlag IC::GetCodeCacheForObject(JSObject* object,
+                                                JSObject* holder) {
+  // Fast-properties and global objects store stubs in their own maps.
+  // Slow properties objects use prototype's map (unless the property is its own
+  // when holder == object). It works because slow properties objects having
+  // the same prototype (or a prototype with the same map) and not having
+  // the property are interchangeable for such a stub.
+  if (holder != object &&
+      !object->HasFastProperties() &&
+      !object->IsJSGlobalProxy() &&
+      !object->IsJSGlobalObject()) {
+    return PROTOTYPE_MAP;
+  }
+  return OWN_MAP;
+}
+
+
+JSObject* IC::GetCodeCacheHolder(Object* object, InlineCacheHolderFlag holder) {
+  Object* map_owner = (holder == OWN_MAP ? object : object->GetPrototype());
+  ASSERT(map_owner->IsJSObject());
+  return JSObject::cast(map_owner);
 }
 
 

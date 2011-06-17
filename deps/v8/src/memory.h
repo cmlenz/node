@@ -36,6 +36,10 @@ namespace internal {
 
 class Memory {
  public:
+  static uint8_t& uint8_at(Address addr) {
+    return *reinterpret_cast<uint8_t*>(addr);
+  }
+
   static uint16_t& uint16_at(Address addr)  {
     return *reinterpret_cast<uint16_t*>(addr);
   }
@@ -54,6 +58,10 @@ class Memory {
 
   static int& int_at(Address addr)  {
     return *reinterpret_cast<int*>(addr);
+  }
+
+  static double& double_at(Address addr)  {
+    return *reinterpret_cast<double*>(addr);
   }
 
   static Address& Address_at(Address addr)  {

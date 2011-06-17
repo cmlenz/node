@@ -60,38 +60,23 @@ bool Snapshot::Initialize(const char* snapshot_file) {
 }
 
 
-class FileByteSink : public SnapshotByteSink {
- public:
-  explicit FileByteSink(const char* snapshot_file) {
-    fp_ = OS::FOpen(snapshot_file, "wb");
-    if (fp_ == NULL) {
-      PrintF("Unable to write to snapshot file \"%s\"\n", snapshot_file);
-      exit(1);
-    }
+Handle<Context> Snapshot::NewContextFromSnapshot() {
+  if (context_size_ == 0) {
+    return Handle<Context>();
   }
-  virtual ~FileByteSink() {
-    if (fp_ != NULL) {
-      fclose(fp_);
-    }
-  }
-  virtual void Put(int byte, const char* description) {
-    if (fp_ != NULL) {
-      fputc(byte, fp_);
-    }
-  }
-
- private:
-  FILE* fp_;
-};
-
-
-bool Snapshot::WriteToFile(const char* snapshot_file) {
-  FileByteSink file(snapshot_file);
-  Serializer ser(&file);
-  ser.Serialize();
-  return true;
+  Heap::ReserveSpace(new_space_used_,
+                     pointer_space_used_,
+                     data_space_used_,
+                     code_space_used_,
+                     map_space_used_,
+                     cell_space_used_,
+                     large_space_used_);
+  SnapshotByteSource source(context_data_, context_size_);
+  Deserializer deserializer(&source);
+  Object* root;
+  deserializer.DeserializePartial(&root);
+  CHECK(root->IsContext());
+  return Handle<Context>(Context::cast(root));
 }
-
-
 
 } }  // namespace v8::internal

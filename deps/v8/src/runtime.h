@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -45,30 +45,47 @@ namespace internal {
   /* Property access */ \
   F(GetProperty, 2, 1) \
   F(KeyedGetProperty, 2, 1) \
-  F(DeleteProperty, 2, 1) \
+  F(DeleteProperty, 3, 1) \
   F(HasLocalProperty, 2, 1) \
   F(HasProperty, 2, 1) \
   F(HasElement, 2, 1) \
   F(IsPropertyEnumerable, 2, 1) \
   F(GetPropertyNames, 1, 1) \
   F(GetPropertyNamesFast, 1, 1) \
+  F(GetLocalPropertyNames, 1, 1) \
+  F(GetLocalElementNames, 1, 1) \
+  F(GetInterceptorInfo, 1, 1) \
+  F(GetNamedInterceptorPropertyNames, 1, 1) \
+  F(GetIndexedInterceptorElementNames, 1, 1) \
   F(GetArgumentsProperty, 1, 1) \
   F(ToFastProperties, 1, 1) \
   F(ToSlowProperties, 1, 1) \
+  F(FinishArrayPrototypeSetup, 1, 1) \
+  F(SpecialArrayFunctions, 1, 1) \
+  F(GetGlobalReceiver, 0, 1) \
   \
   F(IsInPrototypeChain, 2, 1) \
   F(SetHiddenPrototype, 2, 1) \
   \
   F(IsConstructCall, 0, 1) \
   \
+  F(GetOwnProperty, 2, 1) \
+  \
+  F(IsExtensible, 1, 1) \
+  F(PreventExtensions, 1, 1)\
+  \
   /* Utilities */ \
-  F(GetCalledFunction, 0, 1) \
   F(GetFunctionDelegate, 1, 1) \
   F(GetConstructorDelegate, 1, 1) \
-  F(NewArguments, 1, 1) \
   F(NewArgumentsFast, 3, 1) \
   F(LazyCompile, 1, 1) \
+  F(LazyRecompile, 1, 1) \
+  F(NotifyDeoptimized, 1, 1) \
+  F(NotifyOSR, 0, 1) \
+  F(DeoptimizeFunction, 1, 1)             \
+  F(CompileForOnStackReplacement, 1, 1) \
   F(SetNewFunctionAttributes, 1, 1) \
+  F(AllocateInNewSpace, 1, 1) \
   \
   /* Array join support */ \
   F(PushIfAbsent, 2, 1) \
@@ -84,15 +101,21 @@ namespace internal {
   F(StringParseFloat, 1, 1) \
   F(StringToLowerCase, 1, 1) \
   F(StringToUpperCase, 1, 1) \
+  F(StringSplit, 3, 1) \
   F(CharFromCode, 1, 1) \
   F(URIEscape, 1, 1) \
   F(URIUnescape, 1, 1) \
+  F(QuoteJSONString, 1, 1) \
+  F(QuoteJSONStringComma, 1, 1) \
   \
   F(NumberToString, 1, 1) \
+  F(NumberToStringSkipCache, 1, 1) \
   F(NumberToInteger, 1, 1) \
+  F(NumberToIntegerMapMinusZero, 1, 1) \
   F(NumberToJSUint32, 1, 1) \
   F(NumberToJSInt32, 1, 1) \
   F(NumberToSmi, 1, 1) \
+  F(AllocateHeapNumber, 0, 1) \
   \
   /* Arithmetic operations */ \
   F(NumberAdd, 2, 1) \
@@ -101,9 +124,11 @@ namespace internal {
   F(NumberDiv, 2, 1) \
   F(NumberMod, 2, 1) \
   F(NumberUnaryMinus, 1, 1) \
+  F(NumberAlloc, 0, 1) \
   \
   F(StringAdd, 2, 1) \
-  F(StringBuilderConcat, 2, 1) \
+  F(StringBuilderConcat, 3, 1) \
+  F(StringBuilderJoin, 3, 1) \
   \
   /* Bit operations */ \
   F(NumberOr, 2, 1) \
@@ -124,7 +149,6 @@ namespace internal {
   F(StringCompare, 2, 1) \
   \
   /* Math */ \
-  F(Math_abs, 1, 1) \
   F(Math_acos, 1, 1) \
   F(Math_asin, 1, 1) \
   F(Math_atan, 1, 1) \
@@ -135,7 +159,8 @@ namespace internal {
   F(Math_floor, 1, 1) \
   F(Math_log, 1, 1) \
   F(Math_pow, 2, 1) \
-  F(Math_round, 1, 1) \
+  F(Math_pow_cfunction, 2, 1) \
+  F(RoundNumber, 1, 1) \
   F(Math_sin, 1, 1) \
   F(Math_sqrt, 1, 1) \
   F(Math_tan, 1, 1) \
@@ -143,6 +168,12 @@ namespace internal {
   /* Regular expressions */ \
   F(RegExpCompile, 3, 1) \
   F(RegExpExec, 4, 1) \
+  F(RegExpExecMultiple, 4, 1) \
+  F(RegExpInitializeObject, 5, 1) \
+  F(RegExpConstructResult, 3, 1) \
+  \
+  /* JSON */ \
+  F(ParseJson, 1, 1) \
   \
   /* Strings */ \
   F(StringCharCodeAt, 2, 1) \
@@ -153,6 +184,8 @@ namespace internal {
   F(StringReplaceRegExpWithString, 4, 1) \
   F(StringMatch, 3, 1) \
   F(StringTrim, 3, 1) \
+  F(StringToArray, 2, 1) \
+  F(NewStringWrapper, 1, 1) \
   \
   /* Numbers */ \
   F(NumberToRadixString, 2, 1) \
@@ -167,6 +200,7 @@ namespace internal {
   F(FunctionSetPrototype, 2, 1) \
   F(FunctionGetName, 1, 1) \
   F(FunctionSetName, 2, 1) \
+  F(FunctionRemovePrototype, 1, 1) \
   F(FunctionGetSourceCode, 1, 1) \
   F(FunctionGetScript, 1, 1) \
   F(FunctionGetScriptSourcePosition, 1, 1) \
@@ -179,6 +213,7 @@ namespace internal {
   \
   F(ClassOf, 1, 1) \
   F(SetCode, 2, 1) \
+  F(SetExpectedNumberOfProperties, 2, 1) \
   \
   F(CreateApiFunction, 1, 1) \
   F(IsTemplate, 1, 1) \
@@ -192,19 +227,23 @@ namespace internal {
   F(DateLocalTimezone, 1, 1) \
   F(DateLocalTimeOffset, 0, 1) \
   F(DateDaylightSavingsOffset, 1, 1) \
+  F(DateMakeDay, 3, 1) \
+  F(DateYMDFromTime, 2, 1) \
   \
   /* Numbers */ \
-  F(NumberIsFinite, 1, 1) \
   \
   /* Globals */ \
-  F(CompileString, 2, 1) \
+  F(CompileString, 1, 1) \
   F(GlobalPrint, 1, 1) \
   \
   /* Eval */ \
   F(GlobalReceiver, 1, 1) \
-  F(ResolvePossiblyDirectEval, 2, 1) \
+  F(ResolvePossiblyDirectEval, 4, 2) \
+  F(ResolvePossiblyDirectEvalNoLookup, 4, 2) \
   \
-  F(SetProperty, -1 /* 3 or 4 */, 1) \
+  F(SetProperty, -1 /* 4 or 5 */, 1) \
+  F(DefineOrRedefineDataProperty, 4, 1) \
+  F(DefineOrRedefineAccessorProperty, 5, 1) \
   F(IgnoreAttributesAndSetProperty, -1 /* 3 or 4 */, 1) \
   \
   /* Arrays */ \
@@ -212,6 +251,7 @@ namespace internal {
   F(GetArrayKeys, 2, 1) \
   F(MoveArrayContents, 2, 1) \
   F(EstimateNumberOfElements, 1, 1) \
+  F(SwapElements, 3, 1) \
   \
   /* Getters and Setters */ \
   F(DefineAccessor, -1 /* 4 or 5 */, 1) \
@@ -220,39 +260,43 @@ namespace internal {
   /* Literals */ \
   F(MaterializeRegExpLiteral, 4, 1)\
   F(CreateArrayLiteralBoilerplate, 3, 1) \
-  F(CreateObjectLiteralBoilerplate, 3, 1) \
   F(CloneLiteralBoilerplate, 1, 1) \
   F(CloneShallowLiteralBoilerplate, 1, 1) \
+  F(CreateObjectLiteral, 4, 1) \
+  F(CreateObjectLiteralShallow, 4, 1) \
+  F(CreateArrayLiteral, 3, 1) \
+  F(CreateArrayLiteralShallow, 3, 1) \
   \
   /* Catch context extension objects */ \
   F(CreateCatchExtensionObject, 2, 1) \
   \
   /* Statements */ \
-  F(NewClosure, 2, 1) \
+  F(NewClosure, 3, 1) \
   F(NewObject, 1, 1) \
+  F(NewObjectFromBound, 2, 1) \
+  F(FinalizeInstanceSize, 1, 1) \
   F(Throw, 1, 1) \
   F(ReThrow, 1, 1) \
   F(ThrowReferenceError, 1, 1) \
-  F(StackGuard, 1, 1) \
+  F(StackGuard, 0, 1) \
   F(PromoteScheduledException, 0, 1) \
   \
   /* Contexts */ \
   F(NewContext, 1, 1) \
   F(PushContext, 1, 1) \
   F(PushCatchContext, 1, 1) \
-  F(LookupContext, 2, 1) \
+  F(DeleteContextSlot, 2, 1) \
   F(LoadContextSlot, 2, 2) \
   F(LoadContextSlotNoReferenceError, 2, 2) \
-  F(StoreContextSlot, 3, 1) \
+  F(StoreContextSlot, 4, 1) \
   \
   /* Declarations and initialization */ \
-  F(DeclareGlobals, 3, 1) \
+  F(DeclareGlobals, 4, 1) \
   F(DeclareContextSlot, 4, 1) \
-  F(InitializeVarGlobal, -1 /* 1 or 2 */, 1) \
+  F(InitializeVarGlobal, -1 /* 2 or 3 */, 1) \
   F(InitializeConstGlobal, 2, 1) \
   F(InitializeConstContextSlot, 3, 1) \
   F(OptimizeObjectForAddingMultipleProperties, 2, 1) \
-  F(TransformToFastProperties, 1, 1) \
   \
   /* Debugging */ \
   F(DebugPrint, 1, 1) \
@@ -264,8 +308,15 @@ namespace internal {
   F(Log, 2, 1) \
   /* ES5 */ \
   F(LocalKeys, 1, 1) \
-  /* Handle scopes */ \
-  F(DeleteHandleScopeExtensions, 0, 1) \
+  /* Cache suport */ \
+  F(GetFromCache, 2, 1) \
+  \
+  /* Message objects */ \
+  F(NewMessageObject, 2, 1) \
+  F(MessageGetType, 1, 1) \
+  F(MessageGetArguments, 1, 1) \
+  F(MessageGetStartPosition, 1, 1) \
+  F(MessageGetScript, 1, 1) \
   \
   /* Pseudo functions - handled as macros by parser */ \
   F(IS_VAR, 1, 1)
@@ -278,14 +329,9 @@ namespace internal {
   F(Break, 0, 1) \
   F(DebugGetPropertyDetails, 2, 1) \
   F(DebugGetProperty, 2, 1) \
-  F(DebugLocalPropertyNames, 1, 1) \
-  F(DebugLocalElementNames, 1, 1) \
   F(DebugPropertyTypeFromDetails, 1, 1) \
   F(DebugPropertyAttributesFromDetails, 1, 1) \
   F(DebugPropertyIndexFromDetails, 1, 1) \
-  F(DebugInterceptorInfo, 1, 1) \
-  F(DebugNamedInterceptorPropertyNames, 1, 1) \
-  F(DebugIndexedInterceptorElementNames, 1, 1) \
   F(DebugNamedInterceptorPropertyValue, 2, 1) \
   F(DebugIndexedInterceptorElementValue, 2, 1) \
   F(CheckExecutionState, 1, 1) \
@@ -294,18 +340,19 @@ namespace internal {
   F(GetScopeCount, 2, 1) \
   F(GetScopeDetails, 3, 1) \
   F(DebugPrintScopes, 0, 1) \
-  F(GetCFrames, 1, 1) \
   F(GetThreadCount, 1, 1) \
   F(GetThreadDetails, 2, 1) \
+  F(SetDisableBreak, 1, 1) \
   F(GetBreakLocations, 1, 1) \
   F(SetFunctionBreakPoint, 3, 1) \
   F(SetScriptBreakPoint, 3, 1) \
   F(ClearBreakPoint, 1, 1) \
   F(ChangeBreakOnException, 2, 1) \
+  F(IsBreakOnException, 1, 1) \
   F(PrepareStep, 3, 1) \
   F(ClearStepping, 0, 1) \
-  F(DebugEvaluate, 4, 1) \
-  F(DebugEvaluateGlobal, 3, 1) \
+  F(DebugEvaluate, 5, 1) \
+  F(DebugEvaluateGlobal, 4, 1) \
   F(DebugGetLoadedScripts, 0, 1) \
   F(DebugReferencedBy, 3, 1) \
   F(DebugConstructedBy, 2, 1) \
@@ -313,15 +360,46 @@ namespace internal {
   F(SystemBreak, 0, 1) \
   F(DebugDisassembleFunction, 1, 1) \
   F(DebugDisassembleConstructor, 1, 1) \
-  F(FunctionGetInferredName, 1, 1)
+  F(FunctionGetInferredName, 1, 1) \
+  F(LiveEditFindSharedFunctionInfosForScript, 1, 1) \
+  F(LiveEditGatherCompileInfo, 2, 1) \
+  F(LiveEditReplaceScript, 3, 1) \
+  F(LiveEditReplaceFunctionCode, 2, 1) \
+  F(LiveEditFunctionSourceUpdated, 1, 1) \
+  F(LiveEditFunctionSetScript, 2, 1) \
+  F(LiveEditReplaceRefToNestedFunction, 3, 1) \
+  F(LiveEditPatchFunctionPositions, 2, 1) \
+  F(LiveEditCheckAndDropActivations, 2, 1) \
+  F(LiveEditCompareStrings, 2, 1) \
+  F(GetFunctionCodePositionFromSource, 2, 1) \
+  F(ExecuteInDebugContext, 2, 1) \
+  \
+  F(SetFlags, 1, 1) \
+  F(CollectGarbage, 1, 1) \
+  F(GetHeapUsage, 0, 1) \
+  \
+  /* LiveObjectList support*/ \
+  F(HasLOLEnabled, 0, 1) \
+  F(CaptureLOL, 0, 1) \
+  F(DeleteLOL, 1, 1) \
+  F(DumpLOL, 5, 1) \
+  F(GetLOLObj, 1, 1) \
+  F(GetLOLObjId, 1, 1) \
+  F(GetLOLObjRetainers, 6, 1) \
+  F(GetLOLPath, 3, 1) \
+  F(InfoLOL, 2, 1) \
+  F(PrintLOLObj, 1, 1) \
+  F(ResetLOL, 0, 1) \
+  F(SummarizeLOL, 3, 1)
+
 #else
 #define RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F)
 #endif
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
 #define RUNTIME_FUNCTION_LIST_PROFILER_SUPPORT(F) \
-  F(ProfilerResume, 1, 1) \
-  F(ProfilerPause, 1, 1)
+  F(ProfilerResume, 2, 1) \
+  F(ProfilerPause, 2, 1)
 #else
 #define RUNTIME_FUNCTION_LIST_PROFILER_SUPPORT(F)
 #endif
@@ -348,6 +426,60 @@ namespace internal {
   RUNTIME_FUNCTION_LIST_PROFILER_SUPPORT(F)
 
 // ----------------------------------------------------------------------------
+// INLINE_FUNCTION_LIST defines all inlined functions accessed
+// with a native call of the form %_name from within JS code.
+// Entries have the form F(name, number of arguments, number of return values).
+#define INLINE_FUNCTION_LIST(F) \
+  F(IsSmi, 1, 1)                                                             \
+  F(IsNonNegativeSmi, 1, 1)                                                  \
+  F(IsArray, 1, 1)                                                           \
+  F(IsRegExp, 1, 1)                                                          \
+  F(CallFunction, -1 /* receiver + n args + function */, 1)                  \
+  F(ArgumentsLength, 0, 1)                                                   \
+  F(Arguments, 1, 1)                                                         \
+  F(ValueOf, 1, 1)                                                           \
+  F(SetValueOf, 2, 1)                                                        \
+  F(StringCharFromCode, 1, 1)                                                \
+  F(StringCharAt, 2, 1)                                                      \
+  F(ObjectEquals, 2, 1)                                                      \
+  F(RandomHeapNumber, 0, 1)                                                  \
+  F(IsObject, 1, 1)                                                          \
+  F(IsFunction, 1, 1)                                                        \
+  F(IsUndetectableObject, 1, 1)                                              \
+  F(IsSpecObject, 1, 1)                                                      \
+  F(IsStringWrapperSafeForDefaultValueOf, 1, 1)                              \
+  F(MathPow, 2, 1)                                                           \
+  F(MathSin, 1, 1)                                                           \
+  F(MathCos, 1, 1)                                                           \
+  F(MathSqrt, 1, 1)                                                          \
+  F(MathLog, 1, 1)                                                           \
+  F(IsRegExpEquivalent, 2, 1)                                                \
+  F(HasCachedArrayIndex, 1, 1)                                               \
+  F(GetCachedArrayIndex, 1, 1)                                               \
+  F(FastAsciiArrayJoin, 2, 1)
+
+
+// ----------------------------------------------------------------------------
+// INLINE_AND_RUNTIME_FUNCTION_LIST defines all inlined functions accessed
+// with a native call of the form %_name from within JS code that also have
+// a corresponding runtime function, that is called for slow cases.
+// Entries have the form F(name, number of arguments, number of return values).
+#define INLINE_RUNTIME_FUNCTION_LIST(F) \
+  F(IsConstructCall, 0, 1)                                                   \
+  F(ClassOf, 1, 1)                                                           \
+  F(StringCharCodeAt, 2, 1)                                                  \
+  F(Log, 3, 1)                                                               \
+  F(StringAdd, 2, 1)                                                         \
+  F(SubString, 3, 1)                                                         \
+  F(StringCompare, 2, 1)                                                     \
+  F(RegExpExec, 4, 1)                                                        \
+  F(RegExpConstructResult, 3, 1)                                             \
+  F(GetFromCache, 2, 1)                                                      \
+  F(NumberToString, 1, 1)                                                    \
+  F(SwapElements, 3, 1)
+
+
+//---------------------------------------------------------------------------
 // Runtime provides access to all C++ runtime functions.
 
 class Runtime : public AllStatic {
@@ -355,36 +487,53 @@ class Runtime : public AllStatic {
   enum FunctionId {
 #define F(name, nargs, ressize) k##name,
     RUNTIME_FUNCTION_LIST(F)
-    kNofFunctions
 #undef F
+#define F(name, nargs, ressize) kInline##name,
+    INLINE_FUNCTION_LIST(F)
+    INLINE_RUNTIME_FUNCTION_LIST(F)
+#undef F
+    kNumFunctions,
+    kFirstInlineFunction = kInlineIsSmi
   };
 
-  // Runtime function descriptor.
+  enum IntrinsicType {
+    RUNTIME,
+    INLINE
+  };
+
+  // Intrinsic function descriptor.
   struct Function {
+    FunctionId function_id;
+    IntrinsicType intrinsic_type;
     // The JS name of the function.
     const char* name;
 
-    // The name of the stub that calls the runtime function.
-    const char* stub_name;
-
-    // The C++ (native) entry point.
+    // The C++ (native) entry point.  NULL if the function is inlined.
     byte* entry;
 
-    // The number of arguments expected; nargs < 0 if variable no. of
-    // arguments.
+    // The number of arguments expected. nargs is -1 if the function takes
+    // a variable number of arguments.
     int nargs;
-    int stub_id;
-    // Size of result, if complex (larger than a single pointer),
-    // otherwise zero.
+    // Size of result.  Most functions return a single pointer, size 1.
     int result_size;
   };
 
-  // Get the runtime function with the given function id.
-  static Function* FunctionForId(FunctionId fid);
+  static const int kNotFound = -1;
 
-  // Get the runtime function with the given name.
-  static Function* FunctionForName(const char* name);
+  // Add symbols for all the intrinsic function names to a StringDictionary.
+  // Returns failure if an allocation fails.  In this case, it must be
+  // retried with a new, empty StringDictionary, not with the same one.
+  // Alternatively, heap initialization can be completely restarted.
+  MUST_USE_RESULT static MaybeObject* InitializeIntrinsicFunctionNames(
+      Object* dictionary);
 
+  // Get the intrinsic function with the given name, which must be a symbol.
+  static Function* FunctionForSymbol(Handle<String> name);
+
+  // Get the intrinsic function with the given FunctionId.
+  static Function* FunctionForId(FunctionId id);
+
+  // General-purpose helper functions for runtime system.
   static int StringMatch(Handle<String> sub, Handle<String> pat, int index);
 
   static bool IsUpperCaseChar(uint16_t ch);
@@ -394,22 +543,30 @@ class Runtime : public AllStatic {
 
   // Support getting the characters in a string using [] notation as
   // in Firefox/SpiderMonkey, Safari and Opera.
-  static Object* GetElementOrCharAt(Handle<Object> object, uint32_t index);
+  MUST_USE_RESULT static MaybeObject* GetElementOrCharAt(Handle<Object> object,
+                                                         uint32_t index);
+  MUST_USE_RESULT static MaybeObject* GetElement(Handle<Object> object,
+                                                 uint32_t index);
 
-  static Object* SetObjectProperty(Handle<Object> object,
-                                   Handle<Object> key,
-                                   Handle<Object> value,
-                                   PropertyAttributes attr);
+  MUST_USE_RESULT static MaybeObject* SetObjectProperty(
+      Handle<Object> object,
+      Handle<Object> key,
+      Handle<Object> value,
+      PropertyAttributes attr,
+      StrictModeFlag strict);
 
-  static Object* ForceSetObjectProperty(Handle<JSObject> object,
-                                        Handle<Object> key,
-                                        Handle<Object> value,
-                                        PropertyAttributes attr);
+  MUST_USE_RESULT static MaybeObject* ForceSetObjectProperty(
+      Handle<JSObject> object,
+      Handle<Object> key,
+      Handle<Object> value,
+      PropertyAttributes attr);
 
-  static Object* ForceDeleteObjectProperty(Handle<JSObject> object,
-                                           Handle<Object> key);
+  MUST_USE_RESULT static MaybeObject* ForceDeleteObjectProperty(
+      Handle<JSObject> object,
+      Handle<Object> key);
 
-  static Object* GetObjectProperty(Handle<Object> object, Handle<Object> key);
+  MUST_USE_RESULT static MaybeObject* GetObjectProperty(Handle<Object> object,
+                                                        Handle<Object> key);
 
   // This function is used in FunctionNameUsing* tests.
   static Object* FindSharedFunctionInfoInScript(Handle<Script> script,

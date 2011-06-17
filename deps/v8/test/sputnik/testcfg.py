@@ -36,9 +36,8 @@ import time
 class SputnikTestCase(test.TestCase):
 
   def __init__(self, case, path, context, mode):
-    super(SputnikTestCase, self).__init__(context, path)
+    super(SputnikTestCase, self).__init__(context, path, mode)
     self.case = case
-    self.mode = mode
     self.tmpfile = None
     self.source = None
 
@@ -56,12 +55,13 @@ class SputnikTestCase(test.TestCase):
     self.tmpfile.Write(self.GetSource())
     self.tmpfile.Close()
 
-  def AfterRun(self):
-    self.tmpfile.Dispose()
+  def AfterRun(self, result):
+    # Dispose the temporary file if everything looks okay.
+    if not result.HasPreciousOutput(): self.tmpfile.Dispose()
     self.tmpfile = None
 
   def GetCommand(self):
-    result = [self.context.GetVm(self.mode)]
+    result = self.context.GetVmCommand(self, self.mode)
     result.append(self.tmpfile.name)
     return result
 
@@ -88,7 +88,8 @@ class SputnikTestConfiguration(test.TestConfiguration):
     sys.path.append(modroot)
     import sputnik
     globals()['sputnik'] = sputnik
-    test_suite = sputnik.TestSuite(testroot)
+    # Do not run strict mode tests yet. TODO(mmaly)
+    test_suite = sputnik.TestSuite(testroot, False)
     test_suite.Validate()
     tests = test_suite.EnumerateTests([])
     result = []

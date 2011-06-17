@@ -1,4 +1,5 @@
 import Options
+import sys
 
 def set_options(opt):
   pass
@@ -10,7 +11,12 @@ def configure(conf):
 
   conf.check(lib='pthread', uselib_store='PTHREAD')
   conf.check_cc(lib="pthread", header_name="pthread.h", function_name="pthread_create", mandatory=True)
-  conf.check_cc(lib="pthread", header_name="pthread.h", function_name="pthread_atfork", mandatory=True)
+  if sys.platform.startswith("cygwin"):
+    conf.check_cc(lib="pthread", header_name="unistd.h", function_name="pthread_atfork", mandatory=True)
+  elif sys.platform.startswith("win32"):
+    conf.check_cc(lib="pthread", header_name="pthread.h", function_name="pthread_atfork")
+  else:
+    conf.check_cc(lib="pthread", header_name="pthread.h", function_name="pthread_atfork", mandatory=True)
 
   conf.check_cc(msg="Checking for futimes(2)", define_name="HAVE_FUTIMES", fragment="""
     #include <sys/types.h>
@@ -67,7 +73,7 @@ def configure(conf):
     # include <sys/types.h>
     #if __linux
     # include <sys/sendfile.h>
-    #elif __freebsd
+    #elif __FreeBSD__ || defined(__APPLE__)
     # include <sys/socket.h>
     # include <sys/uio.h>
     #elif __hpux
@@ -83,8 +89,10 @@ def configure(conf):
        ssize_t res;
     #if __linux
        res = sendfile (fd, fd, offset, count);
-    #elif __freebsd
+    #elif __FreeBSD__
        res = sendfile (fd, fd, offset, count, 0, &offset, 0);
+    #elif __APPLE__
+       res = sendfile (fd, fd, offset, &offset, 0, 0);
     #elif __hpux
        res = sendfile (fd, fd, offset, count, 0, 0);
     #endif
@@ -117,5 +125,7 @@ def build(bld):
   libeio.install_path = None
   if bld.env["USE_DEBUG"]:
     libeio.clone("debug");
+  if Options.options.product_type != 'program':
+    libeio.ccflags = "-fPIC"
   bld.install_files('${PREFIX}/include/node/', 'eio.h');
 

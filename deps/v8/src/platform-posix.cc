@@ -99,15 +99,6 @@ int64_t OS::Ticks() {
 }
 
 
-const char* OS::LocalTimezone(double time) {
-  if (isnan(time)) return "";
-  time_t tv = static_cast<time_t>(floor(time/msPerSecond));
-  struct tm* t = localtime(&tv);
-  if (NULL == t) return "";
-  return t->tm_zone;
-}
-
-
 double OS::DaylightSavingsOffset(double time) {
   if (isnan(time)) return nan_value();
   time_t tv = static_cast<time_t>(floor(time/msPerSecond));
@@ -117,12 +108,8 @@ double OS::DaylightSavingsOffset(double time) {
 }
 
 
-double OS::LocalTimeOffset() {
-  time_t tv = time(NULL);
-  struct tm* t = localtime(&tv);
-  // tm_gmtoff includes any daylight savings offset, so subtract it.
-  return static_cast<double>(t->tm_gmtoff * msPerSecond -
-                             (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
+int OS::GetLastError() {
+  return errno;
 }
 
 
@@ -132,6 +119,11 @@ double OS::LocalTimeOffset() {
 
 FILE* OS::FOpen(const char* path, const char* mode) {
   return fopen(path, mode);
+}
+
+
+bool OS::Remove(const char* path) {
+  return (remove(path) == 0);
 }
 
 
@@ -151,6 +143,23 @@ void OS::VPrint(const char* format, va_list args) {
   LOG_PRI_VA(ANDROID_LOG_INFO, LOG_TAG, format, args);
 #else
   vprintf(format, args);
+#endif
+}
+
+
+void OS::FPrint(FILE* out, const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  VFPrint(out, format, args);
+  va_end(args);
+}
+
+
+void OS::VFPrint(FILE* out, const char* format, va_list args) {
+#if defined(ANDROID)
+  LOG_PRI_VA(ANDROID_LOG_INFO, LOG_TAG, format, args);
+#else
+  vfprintf(out, format, args);
 #endif
 }
 
@@ -186,7 +195,9 @@ int OS::VSNPrintF(Vector<char> str,
                   va_list args) {
   int n = vsnprintf(str.start(), str.length(), format, args);
   if (n < 0 || n >= str.length()) {
-    str[str.length() - 1] = '\0';
+    // If the length is zero, the assignment fails.
+    if (str.length() > 0)
+      str[str.length() - 1] = '\0';
     return -1;
   } else {
     return n;
@@ -217,6 +228,14 @@ class POSIXSocket : public Socket {
   explicit POSIXSocket() {
     // Create the socket.
     socket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (IsValid()) {
+      // Allow rapid reuse.
+      static const int kOn = 1;
+      int ret = setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR,
+                           &kOn, sizeof(kOn));
+      ASSERT(ret == 0);
+      USE(ret);
+    }
   }
   explicit POSIXSocket(int socket): socket_(socket) { }
   virtual ~POSIXSocket() { Shutdown(); }
@@ -256,7 +275,7 @@ bool POSIXSocket::Bind(const int port) {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = htons(port);
   int status = bind(socket_,
-                    reinterpret_cast<struct sockaddr *>(&addr),
+                    BitCast<struct sockaddr *>(&addr),
                     sizeof(addr));
   return status == 0;
 }

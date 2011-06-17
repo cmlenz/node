@@ -1,65 +1,152 @@
-// Copyright 2009 Ryan Dahl <ry@tinyclouds.org>
-#ifndef SRC_CHILD_PROCESS_H_
-#define SRC_CHILD_PROCESS_H_
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+#ifndef NODE_CHILD_PROCESS_H_
+#define NODE_CHILD_PROCESS_H_
 
 #include <node.h>
-#include <node_events.h>
+#include <node_object_wrap.h>
 
 #include <v8.h>
-#include <ev.h>
-#include <evcom.h>
+#include <uv.h>
+
+#ifdef __POSIX__
+# include <ev.h>
+#endif
+
+#ifdef __MINGW32__
+# include <platform_win32.h> // HANDLE type
+#endif
+
+// ChildProcess is a thin wrapper around ev_child. It has the extra
+// functionality that it can spawn a child process with pipes connected to
+// its stdin, stdout, stderr. This class is not meant to be exposed to but
+// wrapped up in a more friendly EventEmitter with streams for each of the
+// pipes.
+//
+// When the child process exits (when the parent receives SIGCHLD) the
+// callback child.onexit will be called.
 
 namespace node {
 
-class ChildProcess : EventEmitter {
+class ChildProcess : ObjectWrap {
  public:
   static void Initialize(v8::Handle<v8::Object> target);
 
  protected:
-  static v8::Persistent<v8::FunctionTemplate> constructor_template;
   static v8::Handle<v8::Value> New(const v8::Arguments& args);
   static v8::Handle<v8::Value> Spawn(const v8::Arguments& args);
-  static v8::Handle<v8::Value> Write(const v8::Arguments& args);
-  static v8::Handle<v8::Value> Close(const v8::Arguments& args);
   static v8::Handle<v8::Value> Kill(const v8::Arguments& args);
-  static v8::Handle<v8::Value> PIDGetter(v8::Local<v8::String> _,
-                                         const v8::AccessorInfo& info);
 
-  ChildProcess();
-  ~ChildProcess();
+  ChildProcess() : ObjectWrap() {
+#ifdef __POSIX__
+    ev_init(&child_watcher_, ChildProcess::on_chld);
+    child_watcher_.data = this;
+#endif // __POSIX__
 
-  int Spawn(const char *file, char *const argv[], char *const env[]);
-  int Write(const char *str, size_t len);
-  int Close(void);
+    pid_ = -1;
+
+#ifdef __MINGW32__
+    InitializeCriticalSection(&info_lock_);
+    kill_me_ = false;
+    did_start_ = false;
+    exit_signal_ = 0;
+#endif // __MINGW32__
+  }
+
+  ~ChildProcess() {
+#ifdef __POSIX__
+    Stop();
+#endif // __POSIX__
+  }
+
+  // Returns 0 on success. stdio_fds will contain file desciptors for stdin,
+  // stdout, and stderr of the subprocess. stdin is writable; the other two
+  // are readable.
+  // The user of this class has responsibility to close these pipes after
+  // the child process exits.
+  int Spawn(const char *file,
+            char *const argv[],
+            const char *cwd,
+            char **env,
+            int stdio_fds[3],
+            int custom_fds[3],
+            bool do_setsid,
+            int custom_uid,
+            char *custom_uname,
+            int custom_gid,
+            char *custom_gname,
+            int* channel);
+
+  // Simple syscall wrapper. Does not disable the watcher. onexit will be
+  // called still.
   int Kill(int sig);
 
  private:
-  static void on_read(evcom_reader *r, const void *buf, size_t len);
-  static void reader_closed(evcom_reader *r);
-  static void stdin_closed(evcom_writer *w);
-  static void OnCHLD(EV_P_ ev_child *watcher, int revents);
+  void OnExit(int code);
 
-  void MaybeShutdown(void);
-  void Shutdown(void);
+#ifdef __POSIX__ // Shouldn't this just move to node_child_process.cc?
+  void Stop(void);
 
-  evcom_reader stdout_reader_;
-  evcom_reader stderr_reader_;
-  evcom_writer stdin_writer_;
+  static void on_chld(EV_P_ ev_child *watcher, int revents) {
+    ChildProcess *child = static_cast<ChildProcess*>(watcher->data);
+    assert(revents == EV_CHILD);
+    assert(child->pid_ == watcher->rpid);
+    assert(&child->child_watcher_ == watcher);
+    child->OnExit(watcher->rstatus);
+  }
 
   ev_child child_watcher_;
-
-  int stdout_fd_;
-  int stderr_fd_;
-  int stdin_fd_;
-
-  enum encoding stdout_encoding_;
-  enum encoding stderr_encoding_;
-
   pid_t pid_;
+#endif // __POSIX__
 
-  bool got_chld_;
-  int exit_code_;
+#ifdef __MINGW32__
+  static int do_spawn(eio_req *req);
+  static int after_spawn(eio_req *req);
+  static void watch(ChildProcess *child);
+  static void CALLBACK watch_wait_callback(void *data, BOOLEAN didTimeout);
+  static void notify_spawn_failure(ChildProcess *child);
+  static void notify_exit(uv_handle_t* watcher, int status);
+  static int do_kill(ChildProcess *child, int sig);static void close_stdio_handles(ChildProcess *child);
+
+  int pid_;
+  int exit_signal_;
+
+  WCHAR *application_;
+  WCHAR *arguments_;
+  WCHAR *env_win_;
+  WCHAR *cwd_;
+  const WCHAR *path_;
+  const WCHAR *path_ext_;
+
+  HANDLE stdio_handles_[3];
+  bool got_custom_fds_[3];
+
+  CRITICAL_SECTION info_lock_;
+  bool did_start_;
+  bool kill_me_;
+  HANDLE wait_handle_;
+  HANDLE process_handle_;
+#endif // __MINGW32__
 };
 
 }  // namespace node
-#endif  // SRC_CHILD_PROCESS_H_
+#endif  // NODE_CHILD_PROCESS_H_

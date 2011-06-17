@@ -53,21 +53,19 @@
 
 // Basic includes
 #include "../include/v8.h"
-#include "globals.h"
-#include "checks.h"
+#include "v8globals.h"
+#include "v8checks.h"
 #include "allocation.h"
-#include "utils.h"
+#include "v8utils.h"
 #include "flags.h"
 
 // Objects & heap
-#include "objects.h"
-#include "spaces.h"
-#include "heap.h"
 #include "objects-inl.h"
 #include "spaces-inl.h"
 #include "heap-inl.h"
 #include "log-inl.h"
-#include "messages.h"
+#include "cpu-profiler-inl.h"
+#include "handles-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -85,16 +83,24 @@ class V8 : public AllStatic {
   static bool Initialize(Deserializer* des);
   static void TearDown();
   static bool IsRunning() { return is_running_; }
+  static bool UseCrankshaft() { return use_crankshaft_; }
+  static void DisableCrankshaft() { use_crankshaft_ = false; }
   // To be dead you have to have lived
   static bool IsDead() { return has_fatal_error_ || has_been_disposed_; }
   static void SetFatalError();
 
   // Report process out of memory. Implementation found in api.cc.
-  static void FatalProcessOutOfMemory(const char* location);
+  static void FatalProcessOutOfMemory(const char* location,
+                                      bool take_snapshot = false);
 
   // Random number generation support. Not cryptographically safe.
   static uint32_t Random();
-  static Smi* RandomPositiveSmi();
+  // We use random numbers internally in memory allocation and in the
+  // compilers for security. In order to prevent information leaks we
+  // use a separate random state for internal random number
+  // generation.
+  static uint32_t RandomPrivate();
+  static Object* FillHeapNumberWithRandom(Object* heap_number);
 
   // Idle notification directly from the API.
   static bool IdleNotification();
@@ -110,6 +116,8 @@ class V8 : public AllStatic {
   // True if engine has been shut down
   // (reset if engine is restarted)
   static bool has_been_disposed_;
+  // True if we are using the crankshaft optimizing compiler.
+  static bool use_crankshaft_;
 };
 
 } }  // namespace v8::internal

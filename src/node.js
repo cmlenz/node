@@ -1,954 +1,458 @@
-(function () { // annonymous namespace
-
-// deprecation errors
-
-GLOBAL.__module = function () {
-  throw new Error("'__module' has been renamed to 'module'");
-};
-
-GLOBAL.include = function () {
-  throw new Error("include(module) has been removed. Use process.mixin(GLOBAL, require(module)) to get the same effect.");
-};
-
-GLOBAL.puts = function () {
-  throw new Error("puts() has moved. Use require('sys') to bring it back.");
-}
-
-GLOBAL.print = function () {
-  throw new Error("print() has moved. Use require('sys') to bring it back.");
-}
-
-GLOBAL.p = function () {
-  throw new Error("p() has moved. Use require('sys') to bring it back.");
-}
-
-process.debug = function () {
-  throw new Error("process.debug() has moved. Use require('sys') to bring it back.");
-}
-
-process.error = function () {
-  throw new Error("process.error() has moved. Use require('sys') to bring it back.");
-}
-
-GLOBAL.node = {};
-
-node.createProcess = function () {
-  throw new Error("node.createProcess() has been changed to process.createChildProcess() update your code");
-};
-
-node.exec = function () {
-  throw new Error("process.exec() has moved. Use require('sys') to bring it back.");
-};
-
-node.http = {};
-
-node.http.createServer = function () {
-  throw new Error("node.http.createServer() has moved. Use require('http') to access it.");
-};
-
-node.http.createClient = function () {
-  throw new Error("node.http.createClient() has moved. Use require('http') to access it.");
-};
-
-node.tcp = {};
-
-node.tcp.createServer = function () {
-  throw new Error("node.tcp.createServer() has moved. Use require('tcp') to access it.");
-};
-
-node.tcp.createConnection = function () {
-  throw new Error("node.tcp.createConnection() has moved. Use require('tcp') to access it.");
-};
-
-node.dns = {};
-
-node.dns.createConnection = function () {
-  throw new Error("node.dns.createConnection() has moved. Use require('dns') to access it.");
-};
-
-node.inherits = function () {
-  throw new Error("node.inherits() has moved. Use require('sys') to access it.");
-};
-
-
-process.createChildProcess = function (file, args, env) {
-  var child = new process.ChildProcess();
-  args = args || [];
-  env = env || process.ENV;
-  var envPairs = [];
-  for (var key in env) {
-    if (env.hasOwnProperty(key)) {
-      envPairs.push(key + "=" + env[key]);
-    }
-  }
-  // TODO Note envPairs is not currently used in child_process.cc. The PATH
-  // needs to be searched for the 'file' command if 'file' does not contain
-  // a '/' character.
-  child.spawn(file, args, envPairs);
-  return child;
-};
-
-process.assert = function (x, msg) {
-  if (!(x)) throw new Error(msg || "assertion error");
-};
-
-// From jQuery.extend in the jQuery JavaScript Library v1.3.2
-// Copyright (c) 2009 John Resig
-// Dual licensed under the MIT and GPL licenses.
-// http://docs.jquery.com/License
-process.mixin = function() {
-	// copy reference to target object
-	var target = arguments[0] || {}, i = 1, length = arguments.length, deep = false, options;
-
-	// Handle a deep copy situation
-	if ( typeof target === "boolean" ) {
-		deep = target;
-		target = arguments[1] || {};
-		// skip the boolean and the target
-		i = 2;
-	}
-
-	// Handle case when target is a string or something (possible in deep copy)
-	if ( typeof target !== "object" && !(typeof target === 'function') )
-		target = {};
-
-	// mixin process itself if only one argument is passed
-	if ( length == i ) {
-		target = GLOBAL;
-		--i;
-	}
-
-	for ( ; i < length; i++ )
-		// Only deal with non-null/undefined values
-		if ( (options = arguments[ i ]) != null )
-			// Extend the base object
-			for ( var name in options ) {
-				var src = target[ name ], copy = options[ name ];
-
-				// Prevent never-ending loop
-				if ( target === copy )
-					continue;
-
-				// Recurse if we're merging object values
-				if ( deep && copy && typeof copy === "object" )
-					target[ name ] = process.mixin( deep, 
-						// Never move original objects, clone them
-						src || ( copy.length != null ? [ ] : { } )
-					, copy );
-
-				// Don't bring in undefined values
-				else
-					target[ name ] = copy;
-
-			}
-
-	// Return the modified object
-	return target;
-};
-
-
-// Event
-
-// process.EventEmitter is defined in src/events.cc
-// process.EventEmitter.prototype.emit() is also defined there.
-process.EventEmitter.prototype.addListener = function (type, listener) {
-  if (listener instanceof Function) {
-    if (!this._events) this._events = {};
-    if (!this._events.hasOwnProperty(type)) this._events[type] = [];
-    // To avoid recursion in the case that type == "newListeners"! Before
-    // adding it to the listeners, first emit "newListeners".
-    this.emit("newListener", type, listener);
-    this._events[type].push(listener);
-  }
-  return this;
-};
-
-process.EventEmitter.prototype.removeListener = function (type, listener) {
-  if (listener instanceof Function) {
-    // does not use listeners(), so no side effect of creating _events[type]
-    if (!this._events || !this._events.hasOwnProperty(type)) return;
-    var list = this._events[type];
-    if (list.indexOf(listener) < 0) return;
-    list.splice(list.indexOf(listener), 1);
-  }
-  return this;
-};
-
-process.EventEmitter.prototype.listeners = function (type) {
-  if (!this._events) this._events = {};
-  if (!this._events.hasOwnProperty(type)) this._events[type] = [];
-  return this._events[type];
-};
-
-process.inherits = function (ctor, superCtor) {
-  var tempCtor = function(){};
-  tempCtor.prototype = superCtor.prototype;
-  ctor.super_ = superCtor;
-  ctor.prototype = new tempCtor();
-  ctor.prototype.constructor = ctor;
-};
-
-
-// Promise
-
-process.Promise = function () {
-  process.EventEmitter.call();
-  this._blocking = false;
-  this._hasFired = false;
-}
-process.inherits(process.Promise, process.EventEmitter);
-
-process.Promise.prototype.timeout = function(timeout) {
-  if (timeout === undefined) {
-    return this._timeoutDuration;
-  }
-
-  this._timeoutDuration = timeout;
-  if (this._timer) {
-    clearTimeout(this._timer);
-    this._timer = null;
-  }
-
-  var promiseComplete = false;
-  var onComplete = function() {
-    promiseComplete = true;
-    if (this._timer) {
-      clearTimeout(this._timer);
-      this._timer = null;
-    }
-  };
-
-  this
-    .addCallback(onComplete)
-    .addCancelback(onComplete)
-    .addErrback(onComplete);
-
-  var self = this;
-  this._timer = setTimeout(function() {
-    self._timer = null;
-    if (promiseComplete) {
-      return;
-    }
-
-    self.emitError(new Error('timeout'));
-  }, this._timeoutDuration);
-
-  return this;
-};
-
-process.Promise.prototype.cancel = function() {
-  if(this._cancelled) return;
-  this._cancelled = true;
-
-  this._events['success'] = [];
-  this._events['error'] = [];
-
-  this.emitCancel();
-};
-
-process.Promise.prototype.emitCancel = function() {
-  var args = Array.prototype.slice.call(arguments);
-  args.unshift('cancel');
-  this.emit.apply(this, args);
-};
-
-process.Promise.prototype.emitSuccess = function() {
-  if (this.hasFired) return;
-  var args = Array.prototype.slice.call(arguments);
-  args.unshift('success');
-  this.hasFired = true;
-  this.emit.apply(this, args);
-};
-
-process.Promise.prototype.emitError = function() {
-  if (this.hasFired) return;
-  var args = Array.prototype.slice.call(arguments);
-  args.unshift('error');
-  this.hasFired = true;
-  this.emit.apply(this, args);
-};
-
-process.Promise.prototype.addCallback = function (listener) {
-  this.addListener("success", listener);
-  return this;
-};
-
-process.Promise.prototype.addErrback = function (listener) {
-  this.addListener("error", listener);
-  return this;
-};
-
-process.Promise.prototype.addCancelback = function (listener) {
-  this.addListener("cancel", listener);
-  return this;
-};
-
-/* Poor Man's coroutines */
-var coroutineStack = [];
-
-process.Promise.prototype._destack = function () {
-  this._blocking = false;
-
-  while (coroutineStack.length > 0 &&
-         !coroutineStack[coroutineStack.length-1]._blocking)
-  {
-    coroutineStack.pop();
-    process.unloop("one");
-  }
-};
-
-process.Promise.prototype.wait = function () {
-  var self = this;
-  var ret;
-  var hadError = false;
-
-  self.addCallback(function () {
-    if (arguments.length == 1) {
-      ret = arguments[0];
-    } else if (arguments.length > 1) {
-      ret = Array.prototype.slice.call(arguments);
-    }
-    self._destack();
-  });
-
-  self.addErrback(function (arg) {
-    hadError = true;
-    ret = arg;
-    self._destack();
-  });
-
-  coroutineStack.push(self);
-  if (coroutineStack.length > 10) {
-    process.stdio.writeError("WARNING: promise.wait() is being called too often.\n");
-  }
-  self._blocking = true;
-
-  process.loop();
-
-  process.assert(self._blocking == false);
-
-  if (hadError) {
-    if (ret) {
-      throw ret;
-    } else {
-      throw new Error("Promise completed with error (No arguments given.)");
-    }
-  }
-  return ret;
-};
-
-
-
-// Signal Handlers
-
-function isSignal (event) {
-  return event.slice(0, 3) === 'SIG' && process.hasOwnProperty(event);
-};
-
-process.addListener("newListener", function (event) {
-  if (isSignal(event) && process.listeners(event).length === 0) {
-    var handler = new process.SignalHandler(process[event]);
-    handler.addListener("signal", function () {
-      process.emit(event);
-    });
-  }
-});
-
-
-// Stat Change Watchers
-
-var statWatchers = {};
-
-process.watchFile = function (filename) {
-  var stat;
-  var options;
-  var listener;
-
-  if ("object" == typeof arguments[1]) {
-    options = arguments[1];
-    listener = arguments[2];
-  } else {
-    options = {};
-    listener = arguments[1];
-  }
-    
-  if (options.persistent === undefined) options.persistent = true;
-  if (options.interval === undefined) options.interval = 0;
-
-  if (filename in statWatchers) {
-    stat = statWatchers[filename];
-  } else {
-    statWatchers[filename] = new process.Stat();
-    stat = statWatchers[filename];
-    stat.start(filename, options.persistent, options.interval);
-  }
-  stat.addListener("change", listener);
-  return stat;
-};
-
-process.unwatchFile = function (filename) {
-  if (filename in statWatchers) {
-    stat = statWatchers[filename];
-    stat.stop();
-    statWatchers[filename] = undefined;
-  }
-};
-
-process.Stats.prototype._checkModeProperty = function (property) {
-  return ((this.mode & property) === property);
-};
-
-process.Stats.prototype.isDirectory = function () {
-  return this._checkModeProperty(process.S_IFDIR);
-};
-
-process.Stats.prototype.isFile = function () {
-  return this._checkModeProperty(process.S_IFREG);
-};
-
-process.Stats.prototype.isBlockDevice = function () {
-  return this._checkModeProperty(process.S_IFBLK);
-};
-
-process.Stats.prototype.isCharacterDevice = function () {
-  return this._checkModeProperty(process.S_IFCHR);
-};
-
-process.Stats.prototype.isSymbolicLink = function () {
-  return this._checkModeProperty(process.S_IFLNK);
-};
-
-process.Stats.prototype.isFIFO = function () {
-  return this._checkModeProperty(process.S_IFIFO);
-};
-
-process.Stats.prototype.isSocket = function () {
-  return this._checkModeProperty(process.S_IFSOCK);
-};
-
-
-
-// Timers
-
-GLOBAL.setTimeout = function (callback, after) {
-  var timer = new process.Timer();
-  timer.addListener("timeout", callback);
-  timer.start(after, 0);
-  return timer;
-}
-
-GLOBAL.setInterval = function (callback, repeat) {
-  var timer = new process.Timer();
-  timer.addListener("timeout", callback);
-  timer.start(repeat, repeat);
-  return timer;
-}
-
-GLOBAL.clearTimeout = function (timer) {
-  timer.stop();
-}
-
-GLOBAL.clearInterval = GLOBAL.clearTimeout;
-
-
-
-
-// Modules
-
-var debugLevel = 0;
-if ("NODE_DEBUG" in process.ENV) debugLevel = 1;
-
-function debug (x) {
-  if (debugLevel > 0) {
-    process.stdio.writeError(x + "\n");
-  }
-}
-
-
-// private constructor
-function Module (id, parent) {
-  this.id = id;
-  this.exports = {};
-  this.parent = parent;
-
-  this.filename = null;
-  this.loaded = false;
-  this.loadPromise = null;
-  this.exited = false;
-  this.children = [];
-};
-
-var moduleCache = {};
-
-function createModule (id, parent) {
-  if (id in moduleCache) {
-    debug("found " + JSON.stringify(id) + " in cache");
-    return moduleCache[id];
-  }
-  debug("didn't found " + JSON.stringify(id) + " in cache. creating new module");
-  var m = new Module(id, parent);
-  moduleCache[id] = m;
-  return m;
-};
-
-function createInternalModule (id, constructor) {
-  var m = createModule(id);
-  constructor(m.exports);
-  m.loaded = true;
-  return m;
-};
-
-var posixModule = createInternalModule("posix", function (exports) {
-  exports.Stats = process.Stats;
-
-  function callback (promise) {
-    return function () {
-      if (arguments[0] instanceof Error) {
-        promise.emitError.apply(promise, arguments);
-      } else {
-        promise.emitSuccess.apply(promise, arguments);
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+// Hello, and welcome to hacking node.js!
+//
+// This file is invoked by node::Load in src/node.cc, and responsible for
+// bootstrapping the node.js core. Special caution is given to the performance
+// of the startup process, so many dependencies are invoked lazily.
+(function(process) {
+  global = this;
+
+  function startup() {
+    startup.globalVariables();
+    startup.globalTimeouts();
+    startup.globalConsole();
+
+    startup.processAssert();
+    startup.processNextTick();
+    startup.processStdio();
+    startup.processKillAndExit();
+    startup.processSignalHandlers();
+
+    startup.processChannel();
+
+    startup.removedMethods();
+
+    startup.resolveArgv0();
+
+    // There are various modes that Node can run in. The most common two
+    // are running from a script and running the REPL - but there are a few
+    // others like the debugger or running --eval arguments. Here we decide
+    // which mode we run in.
+
+    if (NativeModule.exists('_third_party_main')) {
+      // To allow people to extend Node in different ways, this hook allows
+      // one to drop a file lib/_third_party_main.js into the build
+      // directory which will be executed instead of Node's normal loading.
+      process.nextTick(function() {
+        NativeModule.require('_third_party_main');
+      });
+
+    } else if (process.argv[1] == 'debug') {
+      // Start the debugger agent
+      var d = NativeModule.require('_debugger');
+      d.start();
+
+    } else if (process.argv[1]) {
+      // make process.argv[1] into a full path
+      if (!(/^http:\/\//).exec(process.argv[1])) {
+        var path = NativeModule.require('path');
+        process.argv[1] = path.resolve(process.argv[1]);
       }
-    }
-  }
 
-  // Yes, the follow could be easily DRYed up but I provide the explicit
-  // list to make the arguments clear.
+      var Module = NativeModule.require('module');
+      // REMOVEME: nextTick should not be necessary. This hack to get
+      // test/simple/test-exception-handler2.js working.
+      // Main entry point into most programs:
+      process.nextTick(Module.runMain);
 
-  exports.close = function (fd) {
-    var promise = new process.Promise()
-    process.fs.close(fd, callback(promise));
-    return promise;
-  };
+    } else if (process._eval != null) {
+      // User passed '-e' or '--eval' arguments to Node.
+      var Module = NativeModule.require('module');
+      var rv = new Module()._compile('return eval(process._eval)', 'eval');
+      console.log(rv);
 
-  exports.closeSync = function (fd) {
-    return process.fs.close(fd);
-  };
+    } else {
+      var binding = process.binding('stdio');
+      var fd = binding.openStdin();
+      var Module = NativeModule.require('module');
 
-  exports.open = function (path, flags, mode) {
-    var promise = new process.Promise()
-    process.fs.open(path, flags, mode, callback(promise));
-    return promise;
-  };
+      if (NativeModule.require('tty').isatty(fd)) {
+        // REPL
+        Module.requireRepl().start();
 
-  exports.openSync = function (path, flags, mode) {
-    return process.fs.open(path, flags, mode);
-  };
+      } else {
+        // Read all of stdin - execute it.
+        process.stdin.resume();
+        process.stdin.setEncoding('utf8');
 
-  exports.read = function (fd, length, position, encoding) {
-    var promise = new process.Promise()
-    encoding = encoding || "binary";
-    process.fs.read(fd, length, position, encoding, callback(promise));
-    return promise;
-  };
+        var code = '';
+        process.stdin.on('data', function(d) {
+          code += d;
+        });
 
-  exports.readSync = function (fd, length, position, encoding) {
-    encoding = encoding || "binary";
-    return process.fs.read(fd, length, position, encoding);
-  };
-
-  exports.write = function (fd, data, position, encoding) {
-    var promise = new process.Promise()
-    encoding = encoding || "binary";
-    process.fs.write(fd, data, position, encoding, callback(promise));
-    return promise;
-  };
-
-  exports.writeSync = function (fd, data, position, encoding) {
-    encoding = encoding || "binary";
-    return process.fs.write(fd, data, position, encoding);
-  };
-
-  exports.rename = function (oldPath, newPath) {
-    var promise = new process.Promise()
-    process.fs.rename(oldPath, newPath, callback(promise));
-    return promise;
-  };
-
-  exports.renameSync = function (oldPath, newPath) {
-    return process.fs.rename(oldPath, newPath);
-  };
-
-  exports.rmdir = function (path) {
-    var promise = new process.Promise()
-    process.fs.rmdir(path, callback(promise));
-    return promise;
-  };
-
-  exports.rmdirSync = function (path) {
-    return process.fs.rmdir(path);
-  };
-
-  exports.mkdir = function (path, mode) {
-    var promise = new process.Promise()
-    process.fs.mkdir(path, mode, callback(promise));
-    return promise;
-  };
-
-  exports.mkdirSync = function (path, mode) {
-    return process.fs.mkdir(path, mode);
-  };
-
-  exports.sendfile = function (outFd, inFd, inOffset, length) {
-    var promise = new process.Promise()
-    process.fs.sendfile(outFd, inFd, inOffset, length, callback(promise));
-    return promise;
-  };
-
-  exports.sendfileSync = function (outFd, inFd, inOffset, length) {
-    return process.fs.sendfile(outFd, inFd, inOffset, length);
-  };
-
-  exports.readdir = function (path) {
-    var promise = new process.Promise()
-    process.fs.readdir(path, callback(promise));
-    return promise;
-  };
-
-  exports.readdirSync = function (path) {
-    return process.fs.readdir(path);
-  };
-
-  exports.stat = function (path) {
-    var promise = new process.Promise()
-    process.fs.stat(path, callback(promise));
-    return promise;
-  };
-
-  exports.statSync = function (path) {
-    return process.fs.stat(path);
-  };
-
-  exports.unlink = function (path) {
-    var promise = new process.Promise()
-    process.fs.unlink(path, callback(promise));
-    return promise;
-  };
-
-  exports.unlinkSync = function (path) {
-    return process.fs.unlink(path);
-  };
-
-
-  exports.cat = function (path, encoding) {
-    var promise = new process.Promise();
-
-    encoding = encoding || "utf8"; // default to utf8
-
-    exports.open(path, process.O_RDONLY, 0666).addCallback(function (fd) {
-      var content = "", pos = 0;
-
-      function readChunk () {
-        exports.read(fd, 16*1024, pos, encoding).addCallback(function (chunk, bytes_read) {
-          if (chunk) {
-            if (chunk.constructor === String) {
-              content += chunk;
-            } else {
-              content = content.concat(chunk);
-            }
-
-            pos += bytes_read;
-            readChunk();
-          } else {
-            promise.emitSuccess(content);
-            exports.close(fd);
-          }
-        }).addErrback(function () {
-          promise.emitError.call(arguments);
+        process.stdin.on('end', function() {
+          new Module()._compile(code, '[stdin]');
         });
       }
-      readChunk();
-    }).addErrback(function () {
-      promise.emitError.apply(promise, arguments);
-    });
-    return promise;
-  };
-});
-
-var posix = posixModule.exports;
-
-
-var pathModule = createInternalModule("path", function (exports) {
-  exports.join = function () {
-    var joined = "";
-    for (var i = 0; i < arguments.length; i++) {
-      var part = arguments[i].toString();
-
-      /* Some logic to shorten paths */
-      if (part === ".") continue;
-      while (/^\.\//.exec(part)) part = part.replace(/^\.\//, "");
-
-      if (i === 0) {
-        part = part.replace(/\/*$/, "/");
-      } else if (i === arguments.length - 1) {
-        part = part.replace(/^\/*/, "");
-      } else {
-        part = part.replace(/^\/*/, "").replace(/\/*$/, "/");
-      }
-      joined += part;
     }
-    return joined;
-  };
-
-  exports.dirname = function (path) {
-    if (path.charAt(0) !== "/") path = "./" + path;
-    var parts = path.split("/");
-    return parts.slice(0, parts.length-1).join("/");
-  };
-
-  exports.filename = function (path) {
-    if (path.charAt(0) !== "/") path = "./" + path;
-    var parts = path.split("/");
-    return parts[parts.length-1];
-  };
-
-  exports.exists = function (path, callback) {
-    var p = posix.stat(path);
-    p.addCallback(function () { callback(true); });
-    p.addErrback(function () { callback(false); });
-  };
-});
-
-var path = pathModule.exports;
-
-
-process.paths = [ path.join(process.installPrefix, "lib/node/libraries")
-               ];
- 
-if (process.ENV["HOME"]) {
-  process.paths.unshift(path.join(process.ENV["HOME"], ".node_libraries"));
-}
-
-if (process.ENV["NODE_PATH"]) {
-  process.paths = process.ENV["NODE_PATH"].split(":").concat(process.paths);
-}
-
-
-function findModulePath (id, dirs, callback) {
-  process.assert(dirs.constructor == Array);
-
-  if (/^https?:\/\//.exec(id)) {
-    callback(id);
-    return;
   }
 
-  if (/\.(js|node)$/.exec(id)) {
-    throw new Error("No longer accepting filename extension in module names");
+  startup.globalVariables = function() {
+    global.process = process;
+    global.global = global;
+    global.GLOBAL = global;
+    global.root = global;
+    global.Buffer = NativeModule.require('buffer').Buffer;
+    if (process.cov) {
+      global.__cov = {};
+    }
+  };
+
+  startup.globalTimeouts = function() {
+    global.setTimeout = function() {
+      var t = NativeModule.require('timers');
+      return t.setTimeout.apply(this, arguments);
+    };
+
+    global.setInterval = function() {
+      var t = NativeModule.require('timers');
+      return t.setInterval.apply(this, arguments);
+    };
+
+    global.clearTimeout = function() {
+      var t = NativeModule.require('timers');
+      return t.clearTimeout.apply(this, arguments);
+    };
+
+    global.clearInterval = function() {
+      var t = NativeModule.require('timers');
+      return t.clearInterval.apply(this, arguments);
+    };
+  };
+
+  startup.globalConsole = function() {
+    global.console = NativeModule.require('console');
+  };
+
+  startup._lazyConstants = null;
+
+  startup.lazyConstants = function() {
+    if (!startup._lazyConstants) {
+      startup._lazyConstants = process.binding('constants');
+    }
+    return startup._lazyConstants;
+  };
+
+  var assert;
+  startup.processAssert = function() {
+    // Note that calls to assert() are pre-processed out by JS2C for the
+    // normal build of node. They persist only in the node_g build.
+    // Similarly for debug().
+    assert = process.assert = function(x, msg) {
+      if (!x) throw new Error(msg || 'assertion error');
+    };
+  };
+
+  startup.processNextTick = function() {
+    var nextTickQueue = [];
+
+    process._tickCallback = function() {
+      var l = nextTickQueue.length;
+      if (l === 0) return;
+
+      try {
+        for (var i = 0; i < l; i++) {
+          nextTickQueue[i]();
+        }
+      }
+      catch (e) {
+        nextTickQueue.splice(0, i + 1);
+        if (i + 1 < l) {
+          process._needTickCallback();
+        }
+        throw e; // process.nextTick error, or 'error' event on first tick
+      }
+
+      nextTickQueue.splice(0, l);
+    };
+
+    process.nextTick = function(callback) {
+      nextTickQueue.push(callback);
+      process._needTickCallback();
+    };
+  };
+
+  startup.processStdio = function() {
+    var binding = process.binding('stdio'),
+        // FIXME Remove conditional when net is supported again on windows.
+        net = (process.platform !== "win32")
+              ? NativeModule.require('net')
+              : undefined,
+        fs = NativeModule.require('fs'),
+        tty = NativeModule.require('tty');
+
+    // process.stdout
+
+    var fd = binding.stdoutFD;
+
+    if (binding.isatty(fd)) {
+      process.stdout = new tty.WriteStream(fd);
+    } else if (binding.isStdoutBlocking()) {
+      process.stdout = new fs.WriteStream(null, {fd: fd});
+    } else {
+      process.stdout = new net.Stream(fd);
+      // FIXME Should probably have an option in net.Stream to create a
+      // stream from an existing fd which is writable only. But for now
+      // we'll just add this hack and set the `readable` member to false.
+      // Test: ./node test/fixtures/echo.js < /etc/passwd
+      process.stdout.readable = false;
+    }
+
+    // process.stderr
+
+    var events = NativeModule.require('events');
+    var stderr = process.stderr = new events.EventEmitter();
+    stderr.writable = true;
+    stderr.readable = false;
+    stderr.write = process.binding('stdio').writeError;
+    stderr.end = stderr.destroy = stderr.destroySoon = function() { };
+
+    // process.stdin
+
+    var fd = binding.openStdin();
+
+    if (binding.isatty(fd)) {
+      process.stdin = new tty.ReadStream(fd);
+    } else if (binding.isStdinBlocking()) {
+      process.stdin = new fs.ReadStream(null, {fd: fd});
+    } else {
+      process.stdin = new net.Stream(fd);
+      process.stdin.readable = true;
+    }
+
+    process.openStdin = function() {
+      process.stdin.resume();
+      return process.stdin;
+    };
+  };
+
+  startup.processKillAndExit = function() {
+    process.exit = function(code) {
+      process.emit('exit', code || 0);
+      process.reallyExit(code || 0);
+    };
+
+    process.kill = function(pid, sig) {
+      // preserve null signal
+      if (0 === sig) {
+        process._kill(pid, 0);
+      } else {
+        sig = sig || 'SIGTERM';
+        if (startup.lazyConstants()[sig]) {
+          process._kill(pid, startup.lazyConstants()[sig]);
+        } else {
+          throw new Error('Unknown signal: ' + sig);
+        }
+      }
+    };
+  };
+
+  startup.processSignalHandlers = function() {
+    // Load events module in order to access prototype elements on process like
+    // process.addListener.
+    var events = NativeModule.require('events');
+    var signalWatchers = {};
+    var addListener = process.addListener;
+    var removeListener = process.removeListener;
+
+    function isSignal(event) {
+      return event.slice(0, 3) === 'SIG' && startup.lazyConstants()[event];
+    }
+
+    // Wrap addListener for the special signal types
+    process.on = process.addListener = function(type, listener) {
+      var ret = addListener.apply(this, arguments);
+      if (isSignal(type)) {
+        if (!signalWatchers.hasOwnProperty(type)) {
+          var b = process.binding('signal_watcher');
+          var w = new b.SignalWatcher(startup.lazyConstants()[type]);
+          w.callback = function() { process.emit(type); };
+          signalWatchers[type] = w;
+          w.start();
+
+        } else if (this.listeners(type).length === 1) {
+          signalWatchers[type].start();
+        }
+      }
+
+      return ret;
+    };
+
+    process.removeListener = function(type, listener) {
+      var ret = removeListener.apply(this, arguments);
+      if (isSignal(type)) {
+        assert(signalWatchers.hasOwnProperty(type));
+
+        if (this.listeners(type).length === 0) {
+          signalWatchers[type].stop();
+        }
+      }
+
+      return ret;
+    };
+  };
+
+
+  startup.processChannel = function() {
+    // If we were spawned with env NODE_CHANNEL_FD then load that up and
+    // start parsing data from that stream.
+    if (process.env.NODE_CHANNEL_FD) {
+      var fd = parseInt(process.env.NODE_CHANNEL_FD);
+      assert(fd >= 0);
+      var cp = NativeModule.require('child_process');
+      cp._forkChild(fd);
+      assert(process.send);
+    }
   }
 
-  if (dirs.length == 0) {
-    callback();
-    return;
-  }
-  
-  var dir = dirs[0];
-  var rest = dirs.slice(1, dirs.length);
+  startup._removedProcessMethods = {
+    'assert': 'process.assert() use require("assert").ok() instead',
+    'debug': 'process.debug() use console.error() instead',
+    'error': 'process.error() use console.error() instead',
+    'watchFile': 'process.watchFile() has moved to fs.watchFile()',
+    'unwatchFile': 'process.unwatchFile() has moved to fs.unwatchFile()',
+    'mixin': 'process.mixin() has been removed.',
+    'createChildProcess': 'childProcess API has changed. See doc/api.txt.',
+    'inherits': 'process.inherits() has moved to sys.inherits.',
+    '_byteLength': 'process._byteLength() has moved to Buffer.byteLength',
+  };
 
-  if (id.charAt(0) == '/') {
-    dir = '';
-    rest = [];
+  startup.removedMethods = function() {
+    for (var method in startup._removedProcessMethods) {
+      var reason = startup._removedProcessMethods[method];
+      process[method] = startup._removedMethod(reason);
+    }
+  };
+
+  startup._removedMethod = function(reason) {
+    return function() {
+      throw new Error(reason);
+    };
+  };
+
+  startup.resolveArgv0 = function() {
+    var cwd = process.cwd();
+    var isWindows = process.platform === 'win32';
+
+    // Make process.argv[0] into a full path, but only touch argv[0] if it's
+    // not a system $PATH lookup.
+    // TODO: Make this work on Windows as well.  Note that "node" might
+    // execute cwd\node.exe, or some %PATH%\node.exe on Windows,
+    // and that every directory has its own cwd, so d:node.exe is valid.
+    var argv0 = process.argv[0];
+    if (!isWindows && argv0.indexOf('/') !== -1 && argv0.charAt(0) !== '/') {
+      var path = NativeModule.require('path');
+      process.argv[0] = path.join(cwd, process.argv[0]);
+    }
+
+    if (process.cov) {
+      process.on('exit', function() {
+        var coverage = JSON.stringify(__cov);
+        var path = NativeModule.require('path');
+        var fs = NativeModule.require('fs');
+        var filename = path.join(cwd, 'node-cov.json');
+        try {
+          fs.unlinkSync(filename);
+        } catch(e) {
+        }
+        fs.writeFileSync(filename, coverage);
+      });
+    }
+  };
+
+  // Below you find a minimal module system, which is used to load the node
+  // core modules found in lib/*.js. All core modules are compiled into the
+  // node binary, so they can be loaded faster.
+
+  var Script = process.binding('evals').NodeScript;
+  var runInThisContext = Script.runInThisContext;
+
+  function NativeModule(id) {
+    this.filename = id + '.js';
+    this.id = id;
+    this.exports = {};
+    this.loaded = false;
   }
 
-  var locations = [
-    path.join(dir, id + ".js"),
-    path.join(dir, id + ".node"),
-    path.join(dir, id, "index.js"),
-    path.join(dir, id, "index.addon"),
+  NativeModule._source = process.binding('natives');
+  NativeModule._cache = {};
+
+  NativeModule.require = function(id) {
+    if (id == 'native_module') {
+      return NativeModule;
+    }
+
+    var cached = NativeModule.getCached(id);
+    if (cached) {
+      return cached.exports;
+    }
+
+    if (!NativeModule.exists(id)) {
+      throw new Error('No such native module ' + id);
+    }
+
+    var nativeModule = new NativeModule(id);
+
+    nativeModule.compile();
+    nativeModule.cache();
+
+    return nativeModule.exports;
+  };
+
+  NativeModule.getCached = function(id) {
+    return NativeModule._cache[id];
+  }
+
+  NativeModule.exists = function(id) {
+    return (id in NativeModule._source);
+  }
+
+  NativeModule.getSource = function(id) {
+    return NativeModule._source[id];
+  }
+
+  NativeModule.wrap = function(script) {
+    return NativeModule.wrapper[0] + script + NativeModule.wrapper[1];
+  };
+
+  NativeModule.wrapper = [
+    '(function (exports, require, module, __filename, __dirname, define) { ',
+    '\n});'
   ];
 
-  var searchLocations = function() {
-    var location = locations.shift();
-    if (location === undefined) {
-      findModulePath(id, rest, callback);
-      return;
-    }
+  NativeModule.prototype.compile = function() {
+    var source = NativeModule.getSource(this.id);
+    source = NativeModule.wrap(source);
 
-    path.exists(location, function (found) {
-      if (found) {
-        callback(location);
-        return;
-      }
-      searchLocations();
-    })
+    var fn = runInThisContext(source, this.filename, true);
+    fn(this.exports, NativeModule.require, this, this.filename);
+
+    this.loaded = true;
   };
-  searchLocations();
-}
 
-function loadModule (request, parent) {
-  // This is the promise which is actually returned from require.async()
-  var loadPromise = new process.Promise();
+  NativeModule.prototype.cache = function() {
+    NativeModule._cache[this.id] = this;
+  };
 
-  debug("loadModule REQUEST  " + JSON.stringify(request) + " parent: " + JSON.stringify(parent));
-
-  var id, paths;
-  if (request.charAt(0) == "." && (request.charAt(1) == "/" || request.charAt(1) == ".")) {
-    // Relative request
-    id = path.join(path.dirname(parent.id), request);
-    paths = [path.dirname(parent.filename)];
-  } else {
-    id = request;
-    paths = process.paths;
-  }
-
-  if (id in moduleCache) {
-    debug("found  " + JSON.stringify(id) + " in cache");
-    // In cache
-    var module = moduleCache[id];
-    setTimeout(function () {
-      loadPromise.emitSuccess(module.exports);
-    }, 0);
-  } else {
-    debug("looking for " + JSON.stringify(id) + " in " + JSON.stringify(paths));
-    // Not in cache
-    findModulePath(request, paths, function (filename) {
-      if (!filename) {
-        loadPromise.emitError(new Error("Cannot find module '" + request + "'"));
-      } else {
-        var module = createModule(id, parent);
-        module.load(filename, loadPromise);
-      }
-    });
-  }
-
-  return loadPromise;
-};
-
-Module.prototype.load = function (filename, loadPromise) {
-  debug("load " + JSON.stringify(filename) + " for module " + JSON.stringify(this.id));
-
-  process.assert(!this.loaded);
-  process.assert(!this.loadPromise);
-
-  this.loadPromise = loadPromise;
-  this.filename = filename;
-
-  if (filename.match(/\.node$/)) {
-    this.loadObject(filename, loadPromise);
-  } else {
-    this.loadScript(filename, loadPromise);
-  }
-};
-
-Module.prototype.loadObject = function (filename, loadPromise) {
-  var self = this;
-  // XXX Not yet supporting loading from HTTP. would need to download the
-  // file, store it to tmp then run dlopen on it. 
-  setTimeout(function () {
-    self.loaded = true;
-    process.dlopen(filename, self.exports); // FIXME synchronus
-    loadPromise.emitSuccess(self.exports);
-  }, 0);
-};
-
-function cat (id, loadPromise) {
-  var promise;
-
-  if (id.match(/^http:\/\//)) {
-    promise = new process.Promise();
-    loadModule('http', process.mainModule)
-      .addCallback(function(http) {
-        http.cat(id)
-          .addCallback(function(content) {
-            promise.emitSuccess(content);
-          })
-          .addErrback(function() {
-            promise.emitError.apply(null, arguments);
-          });
-      })
-      .addErrback(function() {
-        loadPromise.emitError(new Error("could not load core module \"http\""));
-      });
-  } else {
-    promise = posix.cat(id);
-  }
-
-  return promise;
-}
-
-Module.prototype.loadScript = function (filename, loadPromise) {
-  var self = this;
-  var catPromise = cat(filename, loadPromise);
-
-  catPromise.addErrback(function () {
-    loadPromise.emitError(new Error("Error reading " + filename));
-  });
-
-  catPromise.addCallback(function (content) {
-    // remove shebang
-    content = content.replace(/^\#\!.*/, '');
-
-    function requireAsync (url) {
-      return loadModule(url, self); // new child
-    }
-
-    function require (url) {
-      return requireAsync(url).wait();
-    }
-
-    require.paths = process.paths;
-    require.async = requireAsync;
-    require.main = process.mainModule;
-
-    // create wrapper function
-    var wrapper = "var __wrap__ = function (exports, require, module, __filename) { " 
-                + content 
-                + "\n}; __wrap__;";
-    var compiledWrapper = process.compile(wrapper, filename);
-
-    compiledWrapper.apply(self.exports, [self.exports, require, self, filename]);
-
-    self.waitChildrenLoad(function () {
-      self.loaded = true;
-      loadPromise.emitSuccess(self.exports);
-    });
-  });
-};
-
-Module.prototype.waitChildrenLoad = function (callback) {
-  var nloaded = 0;
-  var children = this.children;
-  for (var i = 0; i < children.length; i++) {
-    var child = children[i];
-    if (child.loaded) {
-      nloaded++;
-    } else {
-      child.loadPromise.addCallback(function () {
-        nloaded++;
-        if (children.length == nloaded && callback) callback();
-      });
-    }
-  }
-  if (children.length == nloaded && callback) callback();
-};
-
-
-process.exit = function (code) {
-  process.emit("exit");
-  process.reallyExit(code);
-};
-
-var cwd = process.cwd();
-
-// Make process.ARGV[0] and process.ARGV[1] into full paths.
-if (process.ARGV[0].indexOf('/') > 0) {
-  process.ARGV[0] = path.join(cwd, process.ARGV[0]);
-}
-
-if (process.ARGV[1].charAt(0) != "/" && !/^http:\/\//.exec(process.ARGV[1])) {
-  process.ARGV[1] = path.join(cwd, process.ARGV[1]);
-}
-
-// Load the main module--the command line argument.
-process.mainModule = createModule(".");
-var loadPromise = new process.Promise();
-process.mainModule.load(process.ARGV[1], loadPromise);
-
-// All our arguments are loaded. We've evaluated all of the scripts. We
-// might even have created TCP servers. Now we enter the main eventloop. If
-// there are no watchers on the loop (except for the ones that were
-// ev_unref'd) then this function exits. As long as there are active
-// watchers, it blocks.
-process.loop();
-
-process.emit("exit");
-
-}()); // end annonymous namespace
+  startup();
+});

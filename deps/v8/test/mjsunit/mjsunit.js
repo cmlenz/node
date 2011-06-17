@@ -27,6 +27,8 @@
 
 function MjsUnitAssertionError(message) {
   this.message = message;
+  // This allows fetching the stack trace using TryCatch::StackTrace.
+  this.stack = new Error("").stack;
 }
 
 MjsUnitAssertionError.prototype.toString = function () {
@@ -75,6 +77,7 @@ function deepEquals(a, b) {
   if (typeof a == "number" && typeof b == "number" && isNaN(a) && isNaN(b)) {
     return true;
   }
+  if (a == null || b == null) return false;
   if (a.constructor === RegExp || b.constructor === RegExp) {
     return (a.constructor === b.constructor) && (a.toString === b.toString);
   }
@@ -97,6 +100,13 @@ function deepEquals(a, b) {
     return true;
   } else {
     return deepObjectEquals(a, b);
+  }
+}
+
+
+function assertSame(expected, found, name_opt) {
+  if (found !== expected) {
+    fail(expected, found, name_opt);
   }
 }
 

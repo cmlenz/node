@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,6 +30,7 @@
 #include "code-stubs.h"
 #include "codegen-inl.h"
 #include "debug.h"
+#include "deoptimizer.h"
 #include "disasm.h"
 #include "disassembler.h"
 #include "macro-assembler.h"
@@ -44,7 +45,10 @@ namespace internal {
 void Disassembler::Dump(FILE* f, byte* begin, byte* end) {
   for (byte* pc = begin; pc < end; pc++) {
     if (f == NULL) {
-      PrintF("%" V8PRIxPTR "  %4" V8PRIdPTR "  %02x\n", pc, pc - begin, *pc);
+      PrintF("%" V8PRIxPTR "  %4" V8PRIdPTR "  %02x\n",
+             reinterpret_cast<intptr_t>(pc),
+             pc - begin,
+             *pc);
     } else {
       fprintf(f, "%" V8PRIxPTR "  %4" V8PRIdPTR "  %02x\n",
               reinterpret_cast<uintptr_t>(pc), pc - begin, *pc);
@@ -246,7 +250,7 @@ static int DecodeIt(FILE* f,
           if (code->ic_in_loop() == IN_LOOP) {
             out.AddFormatted(", in_loop");
           }
-          if (kind == Code::CALL_IC) {
+          if (kind == Code::CALL_IC || kind == Code::KEYED_CALL_IC) {
             out.AddFormatted(", argc = %d", code->arguments_count());
           }
         } else if (kind == Code::STUB) {
@@ -258,18 +262,16 @@ static int DecodeIt(FILE* f,
             // Get the STUB key and extract major and minor key.
             uint32_t key = Smi::cast(obj)->value();
             uint32_t minor_key = CodeStub::MinorKeyFromKey(key);
-            ASSERT(code->major_key() == CodeStub::MajorKeyFromKey(key));
+            CodeStub::Major major_key = CodeStub::GetMajorKey(code);
+            ASSERT(major_key == CodeStub::MajorKeyFromKey(key));
             out.AddFormatted(" %s, %s, ",
                              Code::Kind2String(kind),
-                             CodeStub::MajorName(code->major_key()));
-            switch (code->major_key()) {
-              case CodeStub::CallFunction:
-                out.AddFormatted("argc = %d", minor_key);
-                break;
-              case CodeStub::Runtime: {
-                const char* name =
-                    RuntimeStub::GetNameFromMinorKey(minor_key);
-                out.AddFormatted("%s", name);
+                             CodeStub::MajorName(major_key, false));
+            switch (major_key) {
+              case CodeStub::CallFunction: {
+                int argc =
+                    CallFunctionStub::ExtractArgcFromMinorKey(minor_key);
+                out.AddFormatted("argc = %d", argc);
                 break;
               }
               default:
@@ -278,6 +280,15 @@ static int DecodeIt(FILE* f,
           }
         } else {
           out.AddFormatted(" %s", Code::Kind2String(kind));
+        }
+      } else if (rmode == RelocInfo::RUNTIME_ENTRY) {
+        // A runtime entry reloinfo might be a deoptimization bailout.
+        Address addr = relocinfo.target_address();
+        int id = Deoptimizer::GetDeoptimizationId(addr, Deoptimizer::EAGER);
+        if (id == Deoptimizer::kNotDeoptimizationEntry) {
+          out.AddFormatted("    ;; %s", RelocInfo::RelocModeName(rmode));
+        } else {
+          out.AddFormatted("    ;; deoptimization bailout %d", id);
         }
       } else {
         out.AddFormatted("    ;; %s", RelocInfo::RelocModeName(rmode));
@@ -301,8 +312,17 @@ int Disassembler::Decode(FILE* f, byte* begin, byte* end) {
 
 // Called by Code::CodePrint.
 void Disassembler::Decode(FILE* f, Code* code) {
-  byte* begin = Code::cast(code)->instruction_start();
-  byte* end = begin + Code::cast(code)->instruction_size();
+  int decode_size = (code->kind() == Code::OPTIMIZED_FUNCTION)
+      ? static_cast<int>(code->safepoint_table_offset())
+      : code->instruction_size();
+  // If there might be a stack check table, stop before reaching it.
+  if (code->kind() == Code::FUNCTION) {
+    decode_size =
+        Min(decode_size, static_cast<int>(code->stack_check_table_offset()));
+  }
+
+  byte* begin = code->instruction_start();
+  byte* end = begin + decode_size;
   V8NameConverter v8NameConverter(code);
   DecodeIt(f, v8NameConverter, begin, end);
 }

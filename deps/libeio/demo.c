@@ -143,9 +143,9 @@ main (void)
       eio_futime (last_fd, 92345.678, 93456.789, 0, res_cb, "futime");
       eio_chown ("eio-test-dir", getuid (), getgid (), 0, res_cb, "chown");
       eio_fchown (last_fd, getuid (), getgid (), 0, res_cb, "fchown");
-      eio_fchmod (last_fd, 0123, 0, res_cb, "fchmod");
-      eio_readdir ("eio-test-dir", 0, readdir_cb, "readdir");
-      eio_readdir ("/nonexistant", 0, readdir_cb, "readdir");
+      eio_fchmod (last_fd, 0723, 0, res_cb, "fchmod");
+      eio_readdir ("eio-test-dir", 0, 0, readdir_cb, "readdir");
+      eio_readdir ("/nonexistant", 0, 0, readdir_cb, "readdir");
       eio_fstat (last_fd, 0, stat_cb, "stat");
       eio_write (last_fd, "test\nfail\n", 10, 4, 0, res_cb, "write");
       event_loop ();

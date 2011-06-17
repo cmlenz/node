@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -32,6 +32,8 @@
 #include "execution.h"
 #include "factory.h"
 #include "macro-assembler.h"
+#include "objects.h"
+#include "objects-visiting.h"
 
 namespace v8 {
 namespace internal {
@@ -43,9 +45,11 @@ Handle<FixedArray> Factory::NewFixedArray(int size, PretenureFlag pretenure) {
 }
 
 
-Handle<FixedArray> Factory::NewFixedArrayWithHoles(int size) {
+Handle<FixedArray> Factory::NewFixedArrayWithHoles(int size,
+                                                   PretenureFlag pretenure) {
   ASSERT(0 <= size);
-  CALL_HEAP_FUNCTION(Heap::AllocateFixedArrayWithHoles(size), FixedArray);
+  CALL_HEAP_FUNCTION(Heap::AllocateFixedArrayWithHoles(size, pretenure),
+                     FixedArray);
 }
 
 
@@ -70,9 +74,37 @@ Handle<DescriptorArray> Factory::NewDescriptorArray(int number_of_descriptors) {
 }
 
 
+Handle<DeoptimizationInputData> Factory::NewDeoptimizationInputData(
+    int deopt_entry_count,
+    PretenureFlag pretenure) {
+  ASSERT(deopt_entry_count > 0);
+  CALL_HEAP_FUNCTION(DeoptimizationInputData::Allocate(deopt_entry_count,
+                                                       pretenure),
+                     DeoptimizationInputData);
+}
+
+
+Handle<DeoptimizationOutputData> Factory::NewDeoptimizationOutputData(
+    int deopt_entry_count,
+    PretenureFlag pretenure) {
+  ASSERT(deopt_entry_count > 0);
+  CALL_HEAP_FUNCTION(DeoptimizationOutputData::Allocate(deopt_entry_count,
+                                                        pretenure),
+                     DeoptimizationOutputData);
+}
+
+
 // Symbols are created in the old generation (data space).
 Handle<String> Factory::LookupSymbol(Vector<const char> string) {
   CALL_HEAP_FUNCTION(Heap::LookupSymbol(string), String);
+}
+
+Handle<String> Factory::LookupAsciiSymbol(Vector<const char> string) {
+  CALL_HEAP_FUNCTION(Heap::LookupAsciiSymbol(string), String);
+}
+
+Handle<String> Factory::LookupTwoByteSymbol(Vector<const uc16> string) {
+  CALL_HEAP_FUNCTION(Heap::LookupTwoByteSymbol(string), String);
 }
 
 
@@ -91,6 +123,12 @@ Handle<String> Factory::NewStringFromTwoByte(Vector<const uc16> string,
                                              PretenureFlag pretenure) {
   CALL_HEAP_FUNCTION(Heap::AllocateStringFromTwoByte(string, pretenure),
                      String);
+}
+
+
+Handle<String> Factory::NewRawAsciiString(int length,
+                                          PretenureFlag pretenure) {
+  CALL_HEAP_FUNCTION(Heap::AllocateRawAsciiString(length, pretenure), String);
 }
 
 
@@ -234,6 +272,13 @@ Handle<ExternalArray> Factory::NewExternalArray(int length,
 }
 
 
+Handle<JSGlobalPropertyCell> Factory::NewJSGlobalPropertyCell(
+    Handle<Object> value) {
+  CALL_HEAP_FUNCTION(Heap::AllocateJSGlobalPropertyCell(*value),
+                     JSGlobalPropertyCell);
+}
+
+
 Handle<Map> Factory::NewMap(InstanceType type, int instance_size) {
   CALL_HEAP_FUNCTION(Heap::AllocateMap(type, instance_size), Map);
 }
@@ -269,11 +314,28 @@ Handle<Map> Factory::CopyMap(Handle<Map> src,
   copy->set_inobject_properties(inobject_properties);
   copy->set_unused_property_fields(inobject_properties);
   copy->set_instance_size(copy->instance_size() + instance_size_delta);
+  copy->set_visitor_id(StaticVisitorBase::GetVisitorId(*copy));
   return copy;
 }
 
+
 Handle<Map> Factory::CopyMapDropTransitions(Handle<Map> src) {
   CALL_HEAP_FUNCTION(src->CopyDropTransitions(), Map);
+}
+
+
+Handle<Map> Factory::GetFastElementsMap(Handle<Map> src) {
+  CALL_HEAP_FUNCTION(src->GetFastElementsMap(), Map);
+}
+
+
+Handle<Map> Factory::GetSlowElementsMap(Handle<Map> src) {
+  CALL_HEAP_FUNCTION(src->GetSlowElementsMap(), Map);
+}
+
+
+Handle<Map> Factory::GetPixelArrayElementsMap(Handle<Map> src) {
+  CALL_HEAP_FUNCTION(src->GetPixelArrayElementsMap(), Map);
 }
 
 
@@ -282,30 +344,28 @@ Handle<FixedArray> Factory::CopyFixedArray(Handle<FixedArray> array) {
 }
 
 
-Handle<JSFunction> Factory::BaseNewFunctionFromBoilerplate(
-    Handle<JSFunction> boilerplate,
-    Handle<Map> function_map) {
-  ASSERT(boilerplate->IsBoilerplate());
-  ASSERT(!boilerplate->has_initial_map());
-  ASSERT(!boilerplate->has_prototype());
-  ASSERT(boilerplate->properties() == Heap::empty_fixed_array());
-  ASSERT(boilerplate->elements() == Heap::empty_fixed_array());
+Handle<JSFunction> Factory::BaseNewFunctionFromSharedFunctionInfo(
+    Handle<SharedFunctionInfo> function_info,
+    Handle<Map> function_map,
+    PretenureFlag pretenure) {
   CALL_HEAP_FUNCTION(Heap::AllocateFunction(*function_map,
-                                            boilerplate->shared(),
-                                            Heap::the_hole_value()),
+                                            *function_info,
+                                            Heap::the_hole_value(),
+                                            pretenure),
                      JSFunction);
 }
 
 
-Handle<JSFunction> Factory::NewFunctionFromBoilerplate(
-    Handle<JSFunction> boilerplate,
-    Handle<Context> context) {
-  Handle<JSFunction> result =
-      BaseNewFunctionFromBoilerplate(boilerplate, Top::function_map());
+Handle<JSFunction> Factory::NewFunctionFromSharedFunctionInfo(
+    Handle<SharedFunctionInfo> function_info,
+    Handle<Context> context,
+    PretenureFlag pretenure) {
+  Handle<JSFunction> result = BaseNewFunctionFromSharedFunctionInfo(
+      function_info, Top::function_map(), pretenure);
   result->set_context(*context);
-  int number_of_literals = boilerplate->NumberOfLiterals();
+  int number_of_literals = function_info->num_literals();
   Handle<FixedArray> literals =
-      Factory::NewFixedArray(number_of_literals, TENURED);
+      Factory::NewFixedArray(number_of_literals, pretenure);
   if (number_of_literals > 0) {
     // Store the object, regexp and array functions in the literals
     // array prefix.  These functions will be used when creating
@@ -314,7 +374,15 @@ Handle<JSFunction> Factory::NewFunctionFromBoilerplate(
                   context->global_context());
   }
   result->set_literals(*literals);
-  ASSERT(!result->IsBoilerplate());
+  result->set_next_function_link(Heap::undefined_value());
+
+  if (V8::UseCrankshaft() &&
+      FLAG_always_opt &&
+      result->is_compiled() &&
+      !function_info->is_toplevel() &&
+      function_info->allows_lazy_compilation()) {
+    result->MarkForLazyRecompilation();
+  }
   return result;
 }
 
@@ -413,7 +481,8 @@ Handle<Object> Factory::NewError(const char* maker,
                                  const char* type,
                                  Handle<JSArray> args) {
   Handle<String> make_str = Factory::LookupAsciiSymbol(maker);
-  Handle<Object> fun_obj(Top::builtins()->GetProperty(*make_str));
+  Handle<Object> fun_obj(Top::builtins()->GetPropertyNoExceptionThrown(
+      *make_str));
   // If the builtins haven't been properly configured yet this error
   // constructor may not have been defined.  Bail out.
   if (!fun_obj->IsJSFunction())
@@ -446,7 +515,7 @@ Handle<Object> Factory::NewError(const char* constructor,
   Handle<JSFunction> fun =
       Handle<JSFunction>(
           JSFunction::cast(
-              Top::builtins()->GetProperty(*constr)));
+              Top::builtins()->GetPropertyNoExceptionThrown(*constr)));
   Object** argv[1] = { Handle<Object>::cast(message).location() };
 
   // Invoke the JavaScript factory method. If an exception is thrown while
@@ -468,6 +537,10 @@ Handle<JSFunction> Factory::NewFunction(Handle<String> name,
                                         bool force_initial_map) {
   // Allocate the function
   Handle<JSFunction> function = NewFunction(name, the_hole_value());
+
+  // Setup the code pointer in both the shared function info and in
+  // the function itself.
+  function->shared()->set_code(*code);
   function->set_code(*code);
 
   if (force_initial_map ||
@@ -487,45 +560,18 @@ Handle<JSFunction> Factory::NewFunction(Handle<String> name,
 }
 
 
-Handle<JSFunction> Factory::NewFunctionBoilerplate(Handle<String> name,
-                                                   int number_of_literals,
-                                                   Handle<Code> code) {
-  Handle<JSFunction> function = NewFunctionBoilerplate(name);
-  function->set_code(*code);
-  int literals_array_size = number_of_literals;
-  // If the function contains object, regexp or array literals,
-  // allocate extra space for a literals array prefix containing the
-  // object, regexp and array constructor functions.
-  if (number_of_literals > 0) {
-    literals_array_size += JSFunction::kLiteralsPrefixSize;
-  }
-  Handle<FixedArray> literals =
-      Factory::NewFixedArray(literals_array_size, TENURED);
-  function->set_literals(*literals);
-  ASSERT(!function->has_initial_map());
-  ASSERT(!function->has_prototype());
-  return function;
-}
-
-
-Handle<JSFunction> Factory::NewFunctionBoilerplate(Handle<String> name) {
-  Handle<SharedFunctionInfo> shared = NewSharedFunctionInfo(name);
-  CALL_HEAP_FUNCTION(Heap::AllocateFunction(Heap::boilerplate_function_map(),
-                                            *shared,
-                                            Heap::the_hole_value()),
-                     JSFunction);
-}
-
-
 Handle<JSFunction> Factory::NewFunctionWithPrototype(Handle<String> name,
                                                      InstanceType type,
                                                      int instance_size,
                                                      Handle<JSObject> prototype,
                                                      Handle<Code> code,
                                                      bool force_initial_map) {
-  // Allocate the function
+  // Allocate the function.
   Handle<JSFunction> function = NewFunction(name, prototype);
 
+  // Setup the code pointer in both the shared function info and in
+  // the function itself.
+  function->shared()->set_code(*code);
   function->set_code(*code);
 
   if (force_initial_map ||
@@ -539,16 +585,28 @@ Handle<JSFunction> Factory::NewFunctionWithPrototype(Handle<String> name,
   // Set function.prototype and give the prototype a constructor
   // property that refers to the function.
   SetPrototypeProperty(function, prototype);
-  SetProperty(prototype, Factory::constructor_symbol(), function, DONT_ENUM);
+  // Currently safe because it is only invoked from Genesis.
+  SetLocalPropertyNoThrow(
+      prototype, Factory::constructor_symbol(), function, DONT_ENUM);
+  return function;
+}
+
+
+Handle<JSFunction> Factory::NewFunctionWithoutPrototype(Handle<String> name,
+                                                        Handle<Code> code) {
+  Handle<JSFunction> function = NewFunctionWithoutPrototype(name);
+  function->shared()->set_code(*code);
+  function->set_code(*code);
+  ASSERT(!function->has_initial_map());
+  ASSERT(!function->has_prototype());
   return function;
 }
 
 
 Handle<Code> Factory::NewCode(const CodeDesc& desc,
-                              ZoneScopeInfo* sinfo,
                               Code::Flags flags,
                               Handle<Object> self_ref) {
-  CALL_HEAP_FUNCTION(Heap::CreateCode(desc, sinfo, flags, self_ref), Code);
+  CALL_HEAP_FUNCTION(Heap::CreateCode(desc, flags, self_ref), Code);
 }
 
 
@@ -557,12 +615,18 @@ Handle<Code> Factory::CopyCode(Handle<Code> code) {
 }
 
 
-static inline Object* DoCopyInsert(DescriptorArray* array,
-                                   String* key,
-                                   Object* value,
-                                   PropertyAttributes attributes) {
+Handle<Code> Factory::CopyCode(Handle<Code> code, Vector<byte> reloc_info) {
+  CALL_HEAP_FUNCTION(Heap::CopyCode(*code, reloc_info), Code);
+}
+
+
+MUST_USE_RESULT static inline MaybeObject* DoCopyInsert(
+    DescriptorArray* array,
+    String* key,
+    Object* value,
+    PropertyAttributes attributes) {
   CallbacksDescriptor desc(key, value, attributes);
-  Object* obj = array->CopyInsert(&desc, REMOVE_TRANSITIONS);
+  MaybeObject* obj = array->CopyInsert(&desc, REMOVE_TRANSITIONS);
   return obj;
 }
 
@@ -678,6 +742,44 @@ Handle<JSArray> Factory::NewJSArrayWithElements(Handle<FixedArray> elements,
 }
 
 
+Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
+    Handle<String> name,
+    int number_of_literals,
+    Handle<Code> code,
+    Handle<SerializedScopeInfo> scope_info) {
+  Handle<SharedFunctionInfo> shared = NewSharedFunctionInfo(name);
+  shared->set_code(*code);
+  shared->set_scope_info(*scope_info);
+  int literals_array_size = number_of_literals;
+  // If the function contains object, regexp or array literals,
+  // allocate extra space for a literals array prefix containing the
+  // context.
+  if (number_of_literals > 0) {
+    literals_array_size += JSFunction::kLiteralsPrefixSize;
+  }
+  shared->set_num_literals(literals_array_size);
+  return shared;
+}
+
+
+Handle<JSMessageObject> Factory::NewJSMessageObject(
+    Handle<String> type,
+    Handle<JSArray> arguments,
+    int start_position,
+    int end_position,
+    Handle<Object> script,
+    Handle<Object> stack_trace,
+    Handle<Object> stack_frames) {
+  CALL_HEAP_FUNCTION(Heap::AllocateJSMessageObject(*type,
+                                                   *arguments,
+                                                   start_position,
+                                                   end_position,
+                                                   *script,
+                                                   *stack_trace,
+                                                   *stack_frames),
+                     JSMessageObject);
+}
+
 Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(Handle<String> name) {
   CALL_HEAP_FUNCTION(Heap::AllocateSharedFunctionInfo(*name),
                      SharedFunctionInfo);
@@ -712,6 +814,29 @@ Handle<JSFunction> Factory::NewFunction(Handle<String> name,
   Handle<JSFunction> fun = NewFunctionHelper(name, prototype);
   fun->set_context(Top::context()->global_context());
   return fun;
+}
+
+
+Handle<JSFunction> Factory::NewFunctionWithoutPrototypeHelper(
+    Handle<String> name) {
+  Handle<SharedFunctionInfo> function_share = NewSharedFunctionInfo(name);
+  CALL_HEAP_FUNCTION(Heap::AllocateFunction(
+                         *Top::function_without_prototype_map(),
+                         *function_share,
+                         *the_hole_value()),
+                     JSFunction);
+}
+
+
+Handle<JSFunction> Factory::NewFunctionWithoutPrototype(Handle<String> name) {
+  Handle<JSFunction> fun = NewFunctionWithoutPrototypeHelper(name);
+  fun->set_context(Top::context()->global_context());
+  return fun;
+}
+
+
+Handle<Object> Factory::ToObject(Handle<Object> object) {
+  CALL_HEAP_FUNCTION(object->ToObject(), Object);
 }
 
 
@@ -763,6 +888,8 @@ Handle<JSObject> Factory::NewArgumentsObject(Handle<Object> callee,
 Handle<JSFunction> Factory::CreateApiFunction(
     Handle<FunctionTemplateInfo> obj, ApiInstanceType instance_type) {
   Handle<Code> code = Handle<Code>(Builtins::builtin(Builtins::HandleApiCall));
+  Handle<Code> construct_stub =
+      Handle<Code>(Builtins::builtin(Builtins::JSConstructStubApi));
 
   int internal_field_count = 0;
   if (!obj->instance_template()->IsUndefined()) {
@@ -837,6 +964,7 @@ Handle<JSFunction> Factory::CreateApiFunction(
   }
 
   result->shared()->set_function_data(*obj);
+  result->shared()->set_construct_stub(*construct_stub);
   result->shared()->DontAdaptArguments();
 
   // Recursively copy parent templates' accessors, 'data' may be modified.
@@ -855,6 +983,7 @@ Handle<JSFunction> Factory::CreateApiFunction(
     map->set_instance_descriptors(*array);
   }
 
+  ASSERT(result->shared()->IsApiFunction());
   return result;
 }
 
@@ -864,11 +993,15 @@ Handle<MapCache> Factory::NewMapCache(int at_least_space_for) {
 }
 
 
-static Object* UpdateMapCacheWith(Context* context,
-                                  FixedArray* keys,
-                                  Map* map) {
-  Object* result = MapCache::cast(context->map_cache())->Put(keys, map);
-  if (!result->IsFailure()) context->set_map_cache(MapCache::cast(result));
+MUST_USE_RESULT static MaybeObject* UpdateMapCacheWith(Context* context,
+                                                       FixedArray* keys,
+                                                       Map* map) {
+  Object* result;
+  { MaybeObject* maybe_result =
+        MapCache::cast(context->map_cache())->Put(keys, map);
+    if (!maybe_result->ToObject(&result)) return maybe_result;
+  }
+  context->set_map_cache(MapCache::cast(result));
   return result;
 }
 

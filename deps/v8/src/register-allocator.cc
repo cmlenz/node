@@ -29,6 +29,7 @@
 
 #include "codegen-inl.h"
 #include "register-allocator-inl.h"
+#include "virtual-frame-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -37,10 +38,12 @@ namespace internal {
 // Result implementation.
 
 
-Result::Result(Register reg) {
+Result::Result(Register reg, TypeInfo info) {
   ASSERT(reg.is_valid() && !RegisterAllocator::IsReserved(reg));
   CodeGeneratorScope::Current()->allocator()->Use(reg);
-  value_ = TypeField::encode(REGISTER) | DataField::encode(reg.code_);
+  value_ = TypeField::encode(REGISTER)
+      | TypeInfoField::encode(info.ToInt())
+      | DataField::encode(reg.code_);
 }
 
 
@@ -81,15 +84,16 @@ Result RegisterAllocator::Allocate() {
 
 Result RegisterAllocator::Allocate(Register target) {
   // If the target is not referenced, it can simply be allocated.
-  if (!is_used(target)) {
+  if (!is_used(RegisterAllocator::ToNumber(target))) {
     return Result(target);
   }
   // If the target is only referenced in the frame, it can be spilled and
   // then allocated.
   ASSERT(cgen_->has_valid_frame());
-  if (cgen_->frame()->is_used(target) && count(target) == 1)  {
+  if (cgen_->frame()->is_used(RegisterAllocator::ToNumber(target)) &&
+      count(target) == 1)  {
     cgen_->frame()->Spill(target);
-    ASSERT(!is_used(target));
+    ASSERT(!is_used(RegisterAllocator::ToNumber(target)));
     return Result(target);
   }
   // Otherwise (if it's referenced outside the frame) we cannot allocate it.

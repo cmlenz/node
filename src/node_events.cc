@@ -1,20 +1,26 @@
-// Copyright 2009 Ryan Dahl <ry@tinyclouds.org>
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 #include <node_events.h>
-
-#include <assert.h>
-#include <stdlib.h>
-#include <string.h>
-#include <strings.h>
-#include <errno.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h> /* inet_ntop */
-#include <netinet/in.h> /* sockaddr_in, sockaddr_in6 */
-
 #include <node.h>
-#include <ev.h>
-#include <v8.h>
 
 namespace node {
 
@@ -29,9 +35,6 @@ void EventEmitter::Initialize(Local<FunctionTemplate> ctemplate) {
 
   constructor_template = Persistent<FunctionTemplate>::New(ctemplate);
 
-  Local<FunctionTemplate> __emit = FunctionTemplate::New(Emit);
-  constructor_template->PrototypeTemplate()->Set(String::NewSymbol("emit"),
-      __emit);
   constructor_template->SetClassName(String::NewSymbol("EventEmitter"));
 
   events_symbol = NODE_PSYMBOL("_events");
@@ -39,65 +42,51 @@ void EventEmitter::Initialize(Local<FunctionTemplate> ctemplate) {
   // All other prototype methods are defined in events.js
 }
 
-static bool ReallyEmit(Handle<Object> self,
-                       Handle<String> event,
-                       int argc,
-                       Handle<Value> argv[]) {
-  HandleScope scope;
 
-  Local<Value> events_v = self->Get(events_symbol);
+bool EventEmitter::Emit(Handle<String> event, int argc, Handle<Value> argv[]) {
+  HandleScope scope;
+  // HandleScope not needed here because only called from one of the two
+  // functions below
+  Local<Value> events_v = handle_->Get(events_symbol);
   if (!events_v->IsObject()) return false;
   Local<Object> events = events_v->ToObject();
 
   Local<Value> listeners_v = events->Get(event);
-  if (!listeners_v->IsArray()) return false;
-  Local<Array> listeners = Local<Array>::Cast(listeners_v);
 
-  for (unsigned int i = 0; i < listeners->Length(); i++) {
-    HandleScope scope;
+  TryCatch try_catch;
 
-    Local<Value> listener_v = listeners->Get(Integer::New(i));
-    if (!listener_v->IsFunction()) continue;
-    Local<Function> listener = Local<Function>::Cast(listener_v);
+  if (listeners_v->IsFunction()) {
+    // Optimized one-listener case
+    Local<Function> listener = Local<Function>::Cast(listeners_v);
 
-    TryCatch try_catch;
-
-    listener->Call(self, argc, argv);
+    listener->Call(handle_, argc, argv);
 
     if (try_catch.HasCaught()) {
       FatalException(try_catch);
       return false;
     }
+
+  } else if (listeners_v->IsArray()) {
+    Local<Array> listeners = Local<Array>::Cast(listeners_v->ToObject()->Clone());
+
+    for (uint32_t i = 0; i < listeners->Length(); i++) {
+      Local<Value> listener_v = listeners->Get(i);
+      if (!listener_v->IsFunction()) continue;
+      Local<Function> listener = Local<Function>::Cast(listener_v);
+
+      listener->Call(handle_, argc, argv);
+
+      if (try_catch.HasCaught()) {
+        FatalException(try_catch);
+        return false;
+      }
+    }
+
+  } else {
+    return false;
   }
 
   return true;
-}
-
-Handle<Value> EventEmitter::Emit(const Arguments& args) {
-  HandleScope scope;
-
-  if (args.Length() == 0) {
-    return ThrowException(Exception::TypeError(
-          String::New("Must give event name.")));
-  }
-
-  Local<String> event = args[0]->ToString();
-
-  int argc = args.Length() - 1;
-  Local<Value> argv[argc];
-
-  for (int i = 0; i < argc; i++) {
-    argv[i] = args[i+1];
-  }
-
-  bool r = ReallyEmit(args.Holder(), event, argc, argv);
-
-  return scope.Close(r ? True() : False());
-}
-
-bool EventEmitter::Emit(Handle<String> event, int argc, Handle<Value> argv[]) {
-  HandleScope scope;
-  return ReallyEmit(handle_, event, argc, argv);
 }
 
 }  // namespace node

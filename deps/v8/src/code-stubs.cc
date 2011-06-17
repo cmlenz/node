@@ -30,99 +30,200 @@
 #include "bootstrapper.h"
 #include "code-stubs.h"
 #include "factory.h"
+#include "gdb-jit.h"
 #include "macro-assembler.h"
 
 namespace v8 {
 namespace internal {
 
-Handle<Code> CodeStub::GetCode() {
-  bool custom_cache = has_custom_cache();
-
-  int index = 0;
-  uint32_t key = 0;
-  if (custom_cache) {
-    Code* cached;
-    if (GetCustomCache(&cached)) {
-      return Handle<Code>(cached);
-    } else {
-      index = NumberDictionary::kNotFound;
-    }
-  } else {
-    key = GetKey();
-    index = Heap::code_stubs()->FindEntry(key);
-    if (index != NumberDictionary::kNotFound)
-      return Handle<Code>(Code::cast(Heap::code_stubs()->ValueAt(index)));
+bool CodeStub::FindCodeInCache(Code** code_out) {
+  int index = Heap::code_stubs()->FindEntry(GetKey());
+  if (index != NumberDictionary::kNotFound) {
+    *code_out = Code::cast(Heap::code_stubs()->ValueAt(index));
+    return true;
   }
+  return false;
+}
 
-  Code* result;
-  {
+
+void CodeStub::GenerateCode(MacroAssembler* masm) {
+  // Update the static counter each time a new code stub is generated.
+  Counters::code_stubs.Increment();
+
+  // Nested stubs are not allowed for leafs.
+  AllowStubCallsScope allow_scope(masm, AllowsStubCalls());
+
+  // Generate the code for the stub.
+  masm->set_generating_stub(true);
+  Generate(masm);
+}
+
+
+void CodeStub::RecordCodeGeneration(Code* code, MacroAssembler* masm) {
+  code->set_major_key(MajorKey());
+
+  PROFILE(CodeCreateEvent(Logger::STUB_TAG, code, GetName()));
+  GDBJIT(AddCode(GDBJITInterface::STUB, GetName(), code));
+  Counters::total_stubs_code_size.Increment(code->instruction_size());
+
+#ifdef ENABLE_DISASSEMBLER
+  if (FLAG_print_code_stubs) {
+#ifdef DEBUG
+    Print();
+#endif
+    code->Disassemble(GetName());
+    PrintF("\n");
+  }
+#endif
+}
+
+
+int CodeStub::GetCodeKind() {
+  return Code::STUB;
+}
+
+
+Handle<Code> CodeStub::GetCode() {
+  Code* code;
+  if (!FindCodeInCache(&code)) {
     v8::HandleScope scope;
-
-    // Update the static counter each time a new code stub is generated.
-    Counters::code_stubs.Increment();
 
     // Generate the new code.
     MacroAssembler masm(NULL, 256);
-
-    // Nested stubs are not allowed for leafs.
-    masm.set_allow_stub_calls(AllowsStubCalls());
-
-    // Generate the code for the stub.
-    masm.set_generating_stub(true);
-    Generate(&masm);
+    GenerateCode(&masm);
 
     // Create the code object.
     CodeDesc desc;
     masm.GetCode(&desc);
 
-    // Copy the generated code into a heap object, and store the major key.
-    Code::Flags flags = Code::ComputeFlags(Code::STUB, InLoop());
-    Handle<Code> code = Factory::NewCode(desc, NULL, flags, masm.CodeObject());
-    code->set_major_key(MajorKey());
+    // Copy the generated code into a heap object.
+    Code::Flags flags = Code::ComputeFlags(
+        static_cast<Code::Kind>(GetCodeKind()),
+        InLoop(),
+        GetICState());
+    Handle<Code> new_object = Factory::NewCode(desc, flags, masm.CodeObject());
+    RecordCodeGeneration(*new_object, &masm);
+    FinishCode(*new_object);
 
-    // Add unresolved entries in the code to the fixup list.
-    Bootstrapper::AddFixup(*code, &masm);
+    // Update the dictionary and the root in Heap.
+    Handle<NumberDictionary> dict =
+        Factory::DictionaryAtNumberPut(
+            Handle<NumberDictionary>(Heap::code_stubs()),
+            GetKey(),
+            new_object);
+    Heap::public_set_code_stubs(*dict);
 
-    LOG(CodeCreateEvent(Logger::STUB_TAG, *code, GetName()));
-    Counters::total_stubs_code_size.Increment(code->instruction_size());
-
-#ifdef ENABLE_DISASSEMBLER
-    if (FLAG_print_code_stubs) {
-#ifdef DEBUG
-      Print();
-#endif
-      code->Disassemble(GetName());
-      PrintF("\n");
-    }
-#endif
-
-    if (custom_cache) {
-      SetCustomCache(*code);
-    } else {
-      // Update the dictionary and the root in Heap.
-      Handle<NumberDictionary> dict =
-          Factory::DictionaryAtNumberPut(
-              Handle<NumberDictionary>(Heap::code_stubs()),
-              key,
-              code);
-      Heap::public_set_code_stubs(*dict);
-    }
-    result = *code;
+    code = *new_object;
   }
 
-  return Handle<Code>(result);
+  return Handle<Code>(code);
 }
 
 
-const char* CodeStub::MajorName(CodeStub::Major major_key) {
+MaybeObject* CodeStub::TryGetCode() {
+  Code* code;
+  if (!FindCodeInCache(&code)) {
+    // Generate the new code.
+    MacroAssembler masm(NULL, 256);
+    GenerateCode(&masm);
+
+    // Create the code object.
+    CodeDesc desc;
+    masm.GetCode(&desc);
+
+    // Try to copy the generated code into a heap object.
+    Code::Flags flags = Code::ComputeFlags(
+        static_cast<Code::Kind>(GetCodeKind()),
+        InLoop(),
+        GetICState());
+    Object* new_object;
+    { MaybeObject* maybe_new_object =
+          Heap::CreateCode(desc, flags, masm.CodeObject());
+      if (!maybe_new_object->ToObject(&new_object)) return maybe_new_object;
+    }
+    code = Code::cast(new_object);
+    RecordCodeGeneration(code, &masm);
+    FinishCode(code);
+
+    // Try to update the code cache but do not fail if unable.
+    MaybeObject* maybe_new_object =
+        Heap::code_stubs()->AtNumberPut(GetKey(), code);
+    if (maybe_new_object->ToObject(&new_object)) {
+      Heap::public_set_code_stubs(NumberDictionary::cast(new_object));
+    }
+  }
+
+  return code;
+}
+
+
+const char* CodeStub::MajorName(CodeStub::Major major_key,
+                                bool allow_unknown_keys) {
   switch (major_key) {
 #define DEF_CASE(name) case name: return #name;
     CODE_STUB_LIST(DEF_CASE)
 #undef DEF_CASE
     default:
-      UNREACHABLE();
+      if (!allow_unknown_keys) {
+        UNREACHABLE();
+      }
       return NULL;
   }
+}
+
+
+int ICCompareStub::MinorKey() {
+  return OpField::encode(op_ - Token::EQ) | StateField::encode(state_);
+}
+
+
+void ICCompareStub::Generate(MacroAssembler* masm) {
+  switch (state_) {
+    case CompareIC::UNINITIALIZED:
+      GenerateMiss(masm);
+      break;
+    case CompareIC::SMIS:
+      GenerateSmis(masm);
+      break;
+    case CompareIC::HEAP_NUMBERS:
+      GenerateHeapNumbers(masm);
+      break;
+    case CompareIC::OBJECTS:
+      GenerateObjects(masm);
+      break;
+    default:
+      UNREACHABLE();
+  }
+}
+
+
+const char* InstanceofStub::GetName() {
+  if (name_ != NULL) return name_;
+  const int kMaxNameLength = 100;
+  name_ = Bootstrapper::AllocateAutoDeletedArray(kMaxNameLength);
+  if (name_ == NULL) return "OOM";
+
+  const char* args = "";
+  if (HasArgsInRegisters()) {
+    args = "_REGS";
+  }
+
+  const char* inline_check = "";
+  if (HasCallSiteInlineCheck()) {
+    inline_check = "_INLINE";
+  }
+
+  const char* return_true_false_object = "";
+  if (ReturnTrueFalseObject()) {
+    return_true_false_object = "_TRUEFALSE";
+  }
+
+  OS::SNPrintF(Vector<char>(name_, kMaxNameLength),
+               "InstanceofStub%s%s%s",
+               args,
+               inline_check,
+               return_true_false_object);
+  return name_;
 }
 
 

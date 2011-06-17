@@ -27,9 +27,11 @@
 
 
 #include "v8.h"
+#include "debug.h"
 #include "debug-agent.h"
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
+
 namespace v8 {
 namespace internal {
 
@@ -54,10 +56,12 @@ void DebuggerAgent::Run() {
   while (!bound && !terminate_) {
     bound = server_->Bind(port_);
 
-    // If an error occoured wait a bit before retrying. The most common error
+    // If an error occurred wait a bit before retrying. The most common error
     // would be that the port is already in use so this avoids a busy loop and
     // make the agent take over the port when it becomes free.
     if (!bound) {
+      PrintF("Failed to open socket on port %d, "
+          "waiting %d ms before retrying\n", port_, kOneSecondInMicros / 1000);
       terminate_now_->Wait(kOneSecondInMicros);
     }
   }
@@ -165,29 +169,46 @@ void DebuggerAgentSession::Run() {
   while (true) {
     // Read data from the debugger front end.
     SmartPointer<char> message = DebuggerAgentUtil::ReceiveMessage(client_);
-    if (*message == NULL) {
-      // Session is closed.
-      agent_->OnSessionClosed(this);
-      return;
+
+    const char* msg = *message;
+    bool is_closing_session = (msg == NULL);
+
+    if (msg == NULL) {
+      // If we lost the connection, then simulate a disconnect msg:
+      msg = "{\"seq\":1,\"type\":\"request\",\"command\":\"disconnect\"}";
+
+    } else {
+      // Check if we're getting a disconnect request:
+      const char* disconnectRequestStr =
+          "\"type\":\"request\",\"command\":\"disconnect\"}";
+      const char* result = strstr(msg, disconnectRequestStr);
+      if (result != NULL) {
+        is_closing_session = true;
+      }
     }
 
     // Convert UTF-8 to UTF-16.
-    unibrow::Utf8InputBuffer<> buf(*message,
-                                   StrLength(*message));
+    unibrow::Utf8InputBuffer<> buf(msg, StrLength(msg));
     int len = 0;
     while (buf.has_more()) {
       buf.GetNext();
       len++;
     }
-    int16_t* temp = NewArray<int16_t>(len + 1);
-    buf.Reset(*message, StrLength(*message));
+    ScopedVector<int16_t> temp(len + 1);
+    buf.Reset(msg, StrLength(msg));
     for (int i = 0; i < len; i++) {
       temp[i] = buf.GetNext();
     }
 
     // Send the request received to the debugger.
-    v8::Debug::SendCommand(reinterpret_cast<const uint16_t *>(temp), len);
-    DeleteArray(temp);
+    v8::Debug::SendCommand(reinterpret_cast<const uint16_t *>(temp.start()),
+                           len);
+
+    if (is_closing_session) {
+      // Session is closed.
+      agent_->OnSessionClosed(this);
+      return;
+    }
   }
 }
 

@@ -117,6 +117,7 @@ class Shell: public i::AllStatic {
                             Handle<Value> name,
                             bool print_result,
                             bool report_exceptions);
+  static const char* ToCString(const v8::String::Utf8Value& value);
   static void ReportException(TryCatch* try_catch);
   static void Initialize();
   static void OnExit();
@@ -135,6 +136,10 @@ class Shell: public i::AllStatic {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   static Handle<Object> DebugMessageDetails(Handle<String> message);
   static Handle<Value> DebugCommandToJSONRequest(Handle<String> command);
+#endif
+
+#ifdef WIN32
+#undef Yield
 #endif
 
   static Handle<Value> Print(const Arguments& args);
@@ -175,6 +180,7 @@ class Shell: public i::AllStatic {
   static Handle<Value> System(const Arguments& args);
   static Handle<Value> ChangeDirectory(const Arguments& args);
   static Handle<Value> SetEnvironment(const Arguments& args);
+  static Handle<Value> UnsetEnvironment(const Arguments& args);
   static Handle<Value> SetUMask(const Arguments& args);
   static Handle<Value> MakeDirectory(const Arguments& args);
   static Handle<Value> RemoveDirectory(const Arguments& args);

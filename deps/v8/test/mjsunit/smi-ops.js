@@ -1,4 +1,4 @@
-// Copyright 2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,8 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-const SMI_MAX = (1 << 30) - 1;
-const SMI_MIN = -(1 << 30);
+const SMI_MAX = (1 << 29) - 1 + (1 << 29);  // Create without overflowing.
+const SMI_MIN = -SMI_MAX - 1;  // Create without overflowing.
 const ONE = 1;
 const ONE_HUNDRED = 100;
 
@@ -212,6 +212,15 @@ assertEquals(0x40000000, v, "smimax++");
 v = SMI_MIN;
 v--;
 assertEquals(-0x40000001, v, "smimin--");
+
+// Check that comparisons of numbers separated by MIN_SMI work.
+assertFalse(SMI_MIN > 0);
+assertFalse(SMI_MIN + 1 > 1);
+assertFalse(SMI_MIN + 1 > 2);
+assertFalse(SMI_MIN + 2 > 1);
+assertFalse(0 < SMI_MIN);
+assertTrue(-1 < SMI_MAX);
+assertFalse(SMI_MAX < -1);
 
 // Not actually Smi operations.
 // Check that relations on unary ops work.
@@ -537,7 +546,7 @@ function testShiftNonSmis() {
   one = four - three;
   zero = one - one;
 
- // Begin block A repeat 3
+  // Begin block A repeat 3
   assertEquals(pos_non_smi, (pos_non_smi) >> zero);
   assertEquals(pos_non_smi, (pos_non_smi) >>> zero);
   assertEquals(pos_non_smi, (pos_non_smi) << zero);
@@ -638,9 +647,58 @@ function testShiftNonSmis() {
 
 testShiftNonSmis();
 
+function intConversion() {
+  function foo(x) {
+    assertEquals(x, (x * 1.0000000001) | 0, "foo more " + x);
+    assertEquals(x, x | 0, "foo " + x);
+    if (x > 0) {
+      assertEquals(x - 1, (x * 0.9999999999) | 0, "foo less " + x);
+    } else {
+      assertEquals(x + 1, (x * 0.9999999999) | 0, "foo less " + x);
+    }
+  }
+  for (var i = 1; i < 0x80000000; i *= 2) {
+    foo(i);
+    foo(-i);
+  }
+  for (var i = 1; i < 1/0; i *= 2) {
+    assertEquals(i | 0, (i * 1.0000000000000001) | 0, "b" + i);
+    assertEquals(-i | 0, (i * -1.0000000000000001) | 0, "c" + i);
+  }
+  for (var i = 0.5; i > 0; i /= 2) {
+    assertEquals(0, i | 0, "d" + i);
+    assertEquals(0, -i | 0, "e" + i);
+  }
+}
+
+intConversion();
 
 // Verify that we handle the (optimized) corner case of shifting by
 // zero even for non-smis.
 function shiftByZero(n) { return n << 0; }
 
 assertEquals(3, shiftByZero(3.1415));
+
+// Verify that the static type information of x >>> 32 is computed correctly.
+function LogicalShiftRightByMultipleOf32(x) {
+  x = x >>> 32;
+  return x + x;
+}
+
+assertEquals(4589934592, LogicalShiftRightByMultipleOf32(-2000000000));
+assertEquals(4589934592, LogicalShiftRightByMultipleOf32(-2000000000));
+
+// Verify that the shift amount is reduced modulo 32, not modulo 64.
+function LeftShiftThreeBy(x) {return 3 << x;}
+assertEquals(24, LeftShiftThreeBy(3));
+assertEquals(24, LeftShiftThreeBy(35));
+assertEquals(24, LeftShiftThreeBy(67));
+assertEquals(24, LeftShiftThreeBy(-29));
+
+// Regression test for a bug in the ARM code generator.  For some register
+// allocations we got the Smi overflow case wrong.
+function f(x, y) { return y +  ( 1 << (x & 31)); }
+assertEquals(-2147483647, f(31, 1));
+
+// Regression test for correct handling of overflow in smi comparison.
+assertTrue(-0x40000000 < 42);

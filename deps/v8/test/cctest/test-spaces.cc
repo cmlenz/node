@@ -32,40 +32,32 @@
 
 using namespace v8::internal;
 
-static void VerifyRSet(Address page_start) {
-#ifdef DEBUG
-  Page::set_rset_state(Page::IN_USE);
-#endif
-
+static void VerifyRegionMarking(Address page_start) {
   Page* p = Page::FromAddress(page_start);
 
-  p->ClearRSet();
+  p->SetRegionMarks(Page::kAllRegionsCleanMarks);
 
   for (Address addr = p->ObjectAreaStart();
        addr < p->ObjectAreaEnd();
        addr += kPointerSize) {
-    CHECK(!Page::IsRSetSet(addr, 0));
+    CHECK(!Page::FromAddress(addr)->IsRegionDirty(addr));
   }
 
   for (Address addr = p->ObjectAreaStart();
        addr < p->ObjectAreaEnd();
        addr += kPointerSize) {
-    Page::SetRSet(addr, 0);
+    Page::FromAddress(addr)->MarkRegionDirty(addr);
   }
 
   for (Address addr = p->ObjectAreaStart();
        addr < p->ObjectAreaEnd();
        addr += kPointerSize) {
-    CHECK(Page::IsRSetSet(addr, 0));
+    CHECK(Page::FromAddress(addr)->IsRegionDirty(addr));
   }
 }
 
 
 TEST(Page) {
-#ifdef DEBUG
-  Page::set_rset_state(Page::NOT_IN_USE);
-#endif
-
   byte* mem = NewArray<byte>(2*Page::kPageSize);
   CHECK(mem != NULL);
 
@@ -77,7 +69,7 @@ TEST(Page) {
   CHECK(p->is_valid());
 
   p->opaque_header = 0;
-  p->is_normal_page = 0x1;
+  p->SetIsLargeObjectPage(false);
   CHECK(!p->next_page()->is_valid());
 
   CHECK(p->ObjectAreaStart() == page_start + Page::kObjectStartOffset);
@@ -90,8 +82,8 @@ TEST(Page) {
   CHECK(p->OffsetToAddress(Page::kObjectStartOffset) == p->ObjectAreaStart());
   CHECK(p->OffsetToAddress(Page::kPageSize) == p->ObjectAreaEnd());
 
-  // test remember set
-  VerifyRSet(page_start);
+  // test region marking
+  VerifyRegionMarking(page_start);
 
   DeleteArray(mem);
 }
@@ -99,17 +91,17 @@ TEST(Page) {
 
 TEST(MemoryAllocator) {
   CHECK(Heap::ConfigureHeapDefault());
-  CHECK(MemoryAllocator::Setup(Heap::MaxReserved()));
+  CHECK(MemoryAllocator::Setup(Heap::MaxReserved(), Heap::MaxExecutableSize()));
 
   OldSpace faked_space(Heap::MaxReserved(), OLD_POINTER_SPACE, NOT_EXECUTABLE);
   int total_pages = 0;
-  int requested = 2;
+  int requested = MemoryAllocator::kPagesPerChunk;
   int allocated;
-  // If we request two pages, we should get one or two.
+  // If we request n pages, we should get n or n - 1.
   Page* first_page =
       MemoryAllocator::AllocatePages(requested, &allocated, &faked_space);
   CHECK(first_page->is_valid());
-  CHECK(allocated > 0 && allocated <= 2);
+  CHECK(allocated == requested || allocated == requested - 1);
   total_pages += allocated;
 
   Page* last_page = first_page;
@@ -118,11 +110,11 @@ TEST(MemoryAllocator) {
     last_page = p;
   }
 
-  // Again, we should get one or two pages.
+  // Again, we should get n or n - 1 pages.
   Page* others =
       MemoryAllocator::AllocatePages(requested, &allocated, &faked_space);
   CHECK(others->is_valid());
-  CHECK(allocated > 0 && allocated <= 2);
+  CHECK(allocated == requested || allocated == requested - 1);
   total_pages += allocated;
 
   MemoryAllocator::SetNextPage(last_page, others);
@@ -137,11 +129,10 @@ TEST(MemoryAllocator) {
   CHECK(second_page->is_valid());
 
   // Freeing pages at the first chunk starting at or after the second page
-  // should free the entire second chunk.  It will return the last page in the
-  // first chunk (if the second page was in the first chunk) or else an
-  // invalid page (if the second page was the start of the second chunk).
+  // should free the entire second chunk.  It will return the page it was passed
+  // (since the second page was in the first chunk).
   Page* free_return = MemoryAllocator::FreePages(second_page);
-  CHECK(free_return == last_page || !free_return->is_valid());
+  CHECK(free_return == second_page);
   MemoryAllocator::SetNextPage(first_page, free_return);
 
   // Freeing pages in the first chunk starting at the first page should free
@@ -155,7 +146,7 @@ TEST(MemoryAllocator) {
 
 TEST(NewSpace) {
   CHECK(Heap::ConfigureHeapDefault());
-  CHECK(MemoryAllocator::Setup(Heap::MaxReserved()));
+  CHECK(MemoryAllocator::Setup(Heap::MaxReserved(), Heap::MaxExecutableSize()));
 
   NewSpace new_space;
 
@@ -168,8 +159,8 @@ TEST(NewSpace) {
   CHECK(new_space.HasBeenSetup());
 
   while (new_space.Available() >= Page::kMaxHeapObjectSize) {
-    Object* obj = new_space.AllocateRaw(Page::kMaxHeapObjectSize);
-    CHECK(!obj->IsFailure());
+    Object* obj =
+        new_space.AllocateRaw(Page::kMaxHeapObjectSize)->ToObjectUnchecked();
     CHECK(new_space.Contains(HeapObject::cast(obj)));
   }
 
@@ -180,7 +171,7 @@ TEST(NewSpace) {
 
 TEST(OldSpace) {
   CHECK(Heap::ConfigureHeapDefault());
-  CHECK(MemoryAllocator::Setup(Heap::MaxReserved()));
+  CHECK(MemoryAllocator::Setup(Heap::MaxReserved(), Heap::MaxExecutableSize()));
 
   OldSpace* s = new OldSpace(Heap::MaxOldGenerationSize(),
                              OLD_POINTER_SPACE,
@@ -196,8 +187,7 @@ TEST(OldSpace) {
   CHECK(s->Setup(start, size));
 
   while (s->Available() > 0) {
-    Object* obj = s->AllocateRaw(Page::kMaxHeapObjectSize);
-    CHECK(!obj->IsFailure());
+    s->AllocateRaw(Page::kMaxHeapObjectSize)->ToObjectUnchecked();
   }
 
   s->TearDown();
@@ -215,8 +205,7 @@ TEST(LargeObjectSpace) {
   Map* faked_map = reinterpret_cast<Map*>(HeapObject::FromAddress(0));
   int lo_size = Page::kPageSize;
 
-  Object* obj = lo->AllocateRaw(lo_size);
-  CHECK(!obj->IsFailure());
+  Object* obj = lo->AllocateRaw(lo_size)->ToObjectUnchecked();
   CHECK(obj->IsHeapObject());
 
   HeapObject* ho = HeapObject::cast(obj);
@@ -229,17 +218,17 @@ TEST(LargeObjectSpace) {
   CHECK(lo->Contains(ho));
 
   while (true) {
-    int available = lo->Available();
-    obj = lo->AllocateRaw(lo_size);
-    if (obj->IsFailure()) break;
+    intptr_t available = lo->Available();
+    { MaybeObject* maybe_obj = lo->AllocateRaw(lo_size);
+      if (!maybe_obj->ToObject(&obj)) break;
+    }
     HeapObject::cast(obj)->set_map(faked_map);
     CHECK(lo->Available() < available);
   };
 
   CHECK(!lo->IsEmpty());
 
-  obj = lo->AllocateRaw(lo_size);
-  CHECK(obj->IsFailure());
+  CHECK(lo->AllocateRaw(lo_size)->IsFailure());
 
   lo->TearDown();
   delete lo;

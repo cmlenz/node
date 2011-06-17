@@ -38,7 +38,8 @@ enum InterruptFlag {
   DEBUGBREAK = 1 << 1,
   DEBUGCOMMAND = 1 << 2,
   PREEMPT = 1 << 3,
-  TERMINATE = 1 << 4
+  TERMINATE = 1 << 4,
+  RUNTIME_PROFILER_TICK = 1 << 5
 };
 
 class Execution : public AllStatic {
@@ -105,6 +106,11 @@ class Execution : public AllStatic {
   // Create a new date object from 'time'.
   static Handle<Object> NewDate(double time, bool* exc);
 
+  // Create a new regular expression object from 'pattern' and 'flags'.
+  static Handle<JSRegExp> NewJSRegExp(Handle<String> pattern,
+                                      Handle<String> flags,
+                                      bool* exc);
+
   // Used to implement [] notation on strings (calls JS code)
   static Handle<Object> CharAt(Handle<String> str, uint32_t index);
 
@@ -122,11 +128,12 @@ class Execution : public AllStatic {
                                           Handle<Object> is_global);
 #ifdef ENABLE_DEBUGGER_SUPPORT
   static Object* DebugBreakHelper();
+  static void ProcessDebugMesssages(bool debug_command_only);
 #endif
 
   // If the stack guard is triggered, but it is not an actual
   // stack overflow, then handle the interruption accordingly.
-  static Object* HandleStackGuardInterrupt();
+  MUST_USE_RESULT static MaybeObject* HandleStackGuardInterrupt();
 
   // Get a function delegate (or undefined) for the given non-function
   // object. Used for support calling objects as functions.
@@ -169,6 +176,8 @@ class StackGuard : public AllStatic {
   static void Interrupt();
   static bool IsTerminateExecution();
   static void TerminateExecution();
+  static bool IsRuntimeProfilerTick();
+  static void RequestRuntimeProfilerTick();
 #ifdef ENABLE_DEBUGGER_SUPPORT
   static bool IsDebugBreak();
   static void DebugBreak();
@@ -182,6 +191,9 @@ class StackGuard : public AllStatic {
   // have the global V8 lock if you are using multiple V8 threads.
   static uintptr_t climit() {
     return thread_local_.climit_;
+  }
+  static uintptr_t real_climit() {
+    return thread_local_.real_climit_;
   }
   static uintptr_t jslimit() {
     return thread_local_.jslimit_;
@@ -198,12 +210,24 @@ class StackGuard : public AllStatic {
 
  private:
   // You should hold the ExecutionAccess lock when calling this method.
-  static bool IsSet(const ExecutionAccess& lock);
+  static bool has_pending_interrupts(const ExecutionAccess& lock) {
+    // Sanity check: We shouldn't be asking about pending interrupts
+    // unless we're not postponing them anymore.
+    ASSERT(!should_postpone_interrupts(lock));
+    return thread_local_.interrupt_flags_ != 0;
+  }
 
   // You should hold the ExecutionAccess lock when calling this method.
-  static void set_limits(uintptr_t value, const ExecutionAccess& lock) {
-    thread_local_.jslimit_ = value;
-    thread_local_.climit_ = value;
+  static bool should_postpone_interrupts(const ExecutionAccess& lock) {
+    return thread_local_.postpone_interrupts_nesting_ > 0;
+  }
+
+  // You should hold the ExecutionAccess lock when calling this method.
+  static void set_interrupt_limits(const ExecutionAccess& lock) {
+    // Ignore attempts to interrupt when interrupts are postponed.
+    if (should_postpone_interrupts(lock)) return;
+    thread_local_.jslimit_ = kInterruptLimit;
+    thread_local_.climit_ = kInterruptLimit;
     Heap::SetStackLimits();
   }
 
@@ -218,8 +242,6 @@ class StackGuard : public AllStatic {
   // Enable or disable interrupts.
   static void EnableInterrupts();
   static void DisableInterrupts();
-
-  static const uintptr_t kLimitSize = kPointerSize * 128 * KB;
 
 #ifdef V8_TARGET_ARCH_X64
   static const uintptr_t kInterruptLimit = V8_UINT64_C(0xfffffffffffffffe);
@@ -294,18 +316,6 @@ class PostponeInterruptsScope BASE_EMBEDDED {
     }
   }
 };
-
-
-class GCExtension : public v8::Extension {
- public:
-  GCExtension() : v8::Extension("v8/gc", kSource) {}
-  virtual v8::Handle<v8::FunctionTemplate> GetNativeFunction(
-      v8::Handle<v8::String> name);
-  static v8::Handle<v8::Value> GC(const v8::Arguments& args);
- private:
-  static const char* kSource;
-};
-
 
 } }  // namespace v8::internal
 

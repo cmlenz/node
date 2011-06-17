@@ -102,7 +102,7 @@ bool CounterMap::Match(void* key1, void* key2) {
 
 
 // Converts a V8 value to a C string.
-const char* ToCString(const v8::String::Utf8Value& value) {
+const char* Shell::ToCString(const v8::String::Utf8Value& value) {
   return *value ? *value : "<string conversion failed>";
 }
 
@@ -127,11 +127,13 @@ bool Shell::ExecuteString(Handle<String> source,
   } else {
     Handle<Value> result = script->Run();
     if (result.IsEmpty()) {
+      ASSERT(try_catch.HasCaught());
       // Print errors that happened during execution.
       if (report_exceptions && !i::FLAG_debugger)
         ReportException(&try_catch);
       return false;
     } else {
+      ASSERT(!try_catch.HasCaught());
       if (print_result && !result->IsUndefined()) {
         // If all went well and the result wasn't undefined then print
         // the returned value.
@@ -403,7 +405,7 @@ void Shell::AddHistogramSample(void* histogram, int sample) {
 void Shell::Initialize() {
   Shell::counter_map_ = new CounterMap();
   // Set up counters
-  if (i::FLAG_map_counters != NULL)
+  if (i::StrLength(i::FLAG_map_counters) != 0)
     MapCounters(i::FLAG_map_counters);
   if (i::FLAG_dump_counters) {
     V8::SetCounterFunction(LookupCounter);
@@ -422,6 +424,12 @@ void Shell::Initialize() {
   global_template->Set(String::New("load"), FunctionTemplate::New(Load));
   global_template->Set(String::New("quit"), FunctionTemplate::New(Quit));
   global_template->Set(String::New("version"), FunctionTemplate::New(Version));
+
+#ifdef LIVE_OBJECT_LIST
+  global_template->Set(String::New("lol_is_enabled"), Boolean::New(true));
+#else
+  global_template->Set(String::New("lol_is_enabled"), Boolean::New(false));
+#endif
 
   Handle<ObjectTemplate> os_templ = ObjectTemplate::New();
   AddOSMethods(os_templ);
@@ -447,9 +455,10 @@ void Shell::Initialize() {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Install the debugger object in the utility scope
   i::Debug::Load();
-  i::JSObject* debug = i::Debug::debug_context()->global();
+  i::Handle<i::JSObject> debug
+      = i::Handle<i::JSObject>(i::Debug::debug_context()->global());
   utility_context_->Global()->Set(String::New("$debug"),
-                                  Utils::ToLocal(&debug));
+                                  Utils::ToLocal(debug));
 #endif
 
   // Run the d8 shell utility script in the utility context
@@ -467,9 +476,12 @@ void Shell::Initialize() {
 
   // Mark the d8 shell script as native to avoid it showing up as normal source
   // in the debugger.
-  i::Handle<i::JSFunction> script_fun = Utils::OpenHandle(*script);
-  i::Handle<i::Script> script_object =
-      i::Handle<i::Script>(i::Script::cast(script_fun->shared()->script()));
+  i::Handle<i::Object> compiled_script = Utils::OpenHandle(*script);
+  i::Handle<i::Script> script_object = compiled_script->IsJSFunction()
+      ? i::Handle<i::Script>(i::Script::cast(
+          i::JSFunction::cast(*compiled_script)->shared()->script()))
+      : i::Handle<i::Script>(i::Script::cast(
+          i::SharedFunctionInfo::cast(*compiled_script)->script()));
   script_object->set_type(i::Smi::FromInt(i::Script::TYPE_NATIVE));
 
   // Create the evaluation context
@@ -482,7 +494,7 @@ void Shell::Initialize() {
 
   // Start the debugger agent if requested.
   if (i::FLAG_debugger_agent) {
-    v8::Debug::EnableAgent("d8 shell", i::FLAG_debugger_port);
+    v8::Debug::EnableAgent("d8 shell", i::FLAG_debugger_port, true);
   }
 
   // Start the in-process debugger if requested.
@@ -572,6 +584,9 @@ Handle<String> Shell::ReadFile(const char* name) {
 void Shell::RunShell() {
   LineEditor* editor = LineEditor::Get();
   printf("V8 version %s [console: %s]\n", V8::GetVersion(), editor->name());
+  if (i::FLAG_debugger) {
+    printf("JavaScript debugger enabled\n");
+  }
   editor->Open();
   while (true) {
     Locker locker;
@@ -592,7 +607,8 @@ void Shell::RunShell() {
 class ShellThread : public i::Thread {
  public:
   ShellThread(int no, i::Vector<const char> files)
-    : no_(no), files_(files) { }
+    : Thread("d8:ShellThread"),
+      no_(no), files_(files) { }
   virtual void Run();
  private:
   int no_;

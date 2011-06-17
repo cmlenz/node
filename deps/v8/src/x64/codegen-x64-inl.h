@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -38,16 +38,6 @@ namespace internal {
 
 void DeferredCode::Jump() { __ jmp(&entry_label_); }
 void DeferredCode::Branch(Condition cc) { __ j(cc, &entry_label_); }
-
-
-void CodeGenerator::GenerateMathSin(ZoneList<Expression*>* args) {
-  GenerateFastMathOp(SIN, args);
-}
-
-
-void CodeGenerator::GenerateMathCos(ZoneList<Expression*>* args) {
-  GenerateFastMathOp(COS, args);
-}
 
 #undef __
 

@@ -25,20 +25,17 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "v8.h"
-
+#include "../include/v8stdint.h"
 #include "token.h"
 
 namespace v8 {
 namespace internal {
 
-#ifdef DEBUG
 #define T(name, string, precedence) #name,
 const char* Token::name_[NUM_TOKENS] = {
   TOKEN_LIST(T, T, IGNORE_TOKEN)
 };
 #undef T
-#endif
 
 
 #define T(name, string, precedence) string,
@@ -54,5 +51,13 @@ int8_t Token::precedence_[NUM_TOKENS] = {
 };
 #undef T
 
+
+#define KT(a, b, c) 'T',
+#define KK(a, b, c) 'K',
+const char Token::token_type[] = {
+  TOKEN_LIST(KT, KK, IGNORE_TOKEN)
+};
+#undef KT
+#undef KK
 
 } }  // namespace v8::internal
